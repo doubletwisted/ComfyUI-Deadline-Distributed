@@ -50,16 +50,41 @@ from .distributed_upscale import (
     NODE_DISPLAY_NAME_MAPPINGS as UPSCALE_DISPLAY_NAME_MAPPINGS
 )
 
+# Import Deadline integration nodes
+from .deadline_submit import (
+    NODE_CLASS_MAPPINGS as DEADLINE_SUBMIT_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as DEADLINE_SUBMIT_DISPLAY_NAME_MAPPINGS
+)
+
+from .deadline_seed_node import (
+    NODE_CLASS_MAPPINGS as DEADLINE_SEED_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as DEADLINE_SEED_DISPLAY_NAME_MAPPINGS
+)
+
+# Initialize Deadline integration API endpoints
+from . import deadline_integration
+
 WEB_DIRECTORY = "./web"
 
 ensure_config_exists()
 
 # Merge node mappings
-NODE_CLASS_MAPPINGS = {**DISTRIBUTED_CLASS_MAPPINGS, **UPSCALE_CLASS_MAPPINGS}
-NODE_DISPLAY_NAME_MAPPINGS = {**DISTRIBUTED_DISPLAY_NAME_MAPPINGS, **UPSCALE_DISPLAY_NAME_MAPPINGS}
+NODE_CLASS_MAPPINGS = {
+    **DISTRIBUTED_CLASS_MAPPINGS, 
+    **UPSCALE_CLASS_MAPPINGS,
+    **DEADLINE_SUBMIT_CLASS_MAPPINGS,
+    **DEADLINE_SEED_CLASS_MAPPINGS
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    **DISTRIBUTED_DISPLAY_NAME_MAPPINGS, 
+    **UPSCALE_DISPLAY_NAME_MAPPINGS,
+    **DEADLINE_SUBMIT_DISPLAY_NAME_MAPPINGS,
+    **DEADLINE_SEED_DISPLAY_NAME_MAPPINGS
+}
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
-debug_log("Loaded Distributed nodes.")
+debug_log("Loaded Distributed + Deadline nodes.")
 debug_log(f"Config file: {CONFIG_FILE}")
 debug_log(f"Available nodes: {list(NODE_CLASS_MAPPINGS.keys())}")

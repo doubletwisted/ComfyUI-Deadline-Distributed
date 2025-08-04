@@ -1326,6 +1326,92 @@ class DistributedExtension {
     _handleClearMemory(button) {
         return handleClearMemory(this, button);
     }
+
+    // --- Deadline Integration Methods ---
+
+    async updateDeadlineStatus() {
+        const statusElement = document.getElementById('deadline-status');
+        if (!statusElement) return;
+
+        statusElement.textContent = "Loading Deadline status...";
+        statusElement.style.color = "#888";
+
+        try {
+            const response = await fetch('/deadline/status');
+            const status = await response.json();
+
+            if (status.available) {
+                statusElement.innerHTML = `
+                    <div>📊 Available: ${status.available_workers} workers</div>
+                    <div>🎯 Claimed: ${status.claimed_workers} workers</div>
+                    <div>📈 Total: ${status.total_workers} workers</div>
+                `;
+                statusElement.style.color = "#4CAF50";
+            } else {
+                statusElement.innerHTML = `
+                    <div style="color: #ff6b6b;">❌ Deadline not available</div>
+                    <div style="font-size: 10px; margin-top: 4px;">${status.error || 'Unknown error'}</div>
+                `;
+                statusElement.style.color = "#ff6b6b";
+            }
+        } catch (error) {
+            statusElement.innerHTML = `
+                <div style="color: #ff6b6b;">❌ Connection error</div>
+                <div style="font-size: 10px; margin-top: 4px;">${error.message}</div>
+            `;
+            statusElement.style.color = "#ff6b6b";
+        }
+    }
+
+    async claimDeadlineWorkers() {
+        try {
+            // Get master WS address from distributed config
+            const masterWS = this.config?.master?.ws_address || 'localhost:8188';
+            
+            const response = await fetch('/deadline/claim_workers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    count: 2, // Default to 2 workers
+                    master_ws: masterWS
+                })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                this.log(`✅ ${result.message}`, 'info');
+                // Update status after claiming
+                setTimeout(() => this.updateDeadlineStatus(), 1000);
+            } else {
+                this.log(`❌ Failed to claim workers: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.log(`❌ Error claiming workers: ${error.message}`, 'error');
+        }
+    }
+
+    async releaseDeadlineWorkers() {
+        try {
+            const response = await fetch('/deadline/release_workers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                this.log(`✅ ${result.message}`, 'info');
+                // Update status after releasing
+                setTimeout(() => this.updateDeadlineStatus(), 1000);
+            } else {
+                this.log(`❌ Failed to release workers: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.log(`❌ Error releasing workers: ${error.message}`, 'error');
+        }
+    }
 }
 
 app.registerExtension({

@@ -9,7 +9,7 @@
 <br><br>
 </div>
 
-> **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network and cloud.**
+> **A powerful extension for ComfyUI that enables distributed and parallel processing across multiple GPUs and machines, including Thinkbox Deadline render farm integration. Generate more images and videos and accelerate your upscaling workflows by leveraging all available GPU resources in your network, cloud, and render farm.**
 
 ![Clipboard Image (7)](https://github.com/user-attachments/assets/66aaadef-f195-48a1-a368-17dd0dae477d)
 
@@ -32,17 +32,24 @@
 - Convert any workflow to distributed with 2 nodes
 - JSON configuration with UI controls
 
+#### 🆕 Deadline Integration
+- **Interactive Distributed Mode** - Claim Deadline workers for real-time distributed processing
+- **Batch Render Mode** - Submit workflows to Deadline for overnight rendering
+- **Enterprise Scale** - Leverage existing render farm infrastructure
+- **Mixed Worker Pools** - Combine local, remote, cloud, and Deadline workers
+
 ---
 
 ## Worker Types
 
 <img width="200" align="right" alt="ComfyUI_temp_khvcc_00034_@0 25x" src="https://github.com/user-attachments/assets/651e4912-7c23-4e32-bd88-250f5175e129" />
 
-ComfyUI Distributed supports three types of workers:
+ComfyUI Distributed supports four types of workers:
 
 - **Local Workers** - Additional GPUs on the same machine (auto-configured on first launch)
 - **Remote Workers** - GPUs on other computers in your network
 - **Cloud Workers** - GPUs hosted on a cloud service like Runpod, accessible via secure tunnels
+- **🆕 Deadline Workers** - GPUs managed by Thinkbox Deadline render farm for enterprise-scale distributed processing
 
 > For detailed setup instructions, see the [setup guide](/docs/worker-setup-guides.md)
 

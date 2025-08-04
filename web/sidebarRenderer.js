@@ -258,6 +258,90 @@ export async function renderSidebarContent(extension, el) {
         settingsSection.appendChild(settingsContent);
         container.appendChild(settingsSection);
 
+        // Deadline Integration Section
+        const deadlineSection = document.createElement("div");
+        deadlineSection.style.cssText = "border-top: 1px solid #444; padding-top: 10px; margin-bottom: 10px;";
+        
+        // Deadline header with toggle
+        const deadlineHeader = document.createElement("div");
+        deadlineHeader.style.cssText = "display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;";
+        
+        const deadlineTitle = document.createElement("h4");
+        deadlineTitle.textContent = "Deadline Workers";
+        deadlineTitle.style.cssText = "margin: 0; font-size: 14px; color: #ff6b35;"; // Orange color for Deadline
+        
+        const deadlineToggle = document.createElement("span");
+        deadlineToggle.textContent = "▶"; // Right arrow when collapsed
+        deadlineToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
+        
+        deadlineHeader.appendChild(deadlineTitle);
+        deadlineHeader.appendChild(deadlineToggle);
+        
+        // Hover effect for header
+        deadlineHeader.onmouseover = () => {
+            deadlineToggle.style.color = "#ff6b35";
+        };
+        deadlineHeader.onmouseout = () => {
+            deadlineToggle.style.color = "#888";
+        };
+        
+        // Collapsible deadline content
+        const deadlineContent = document.createElement("div");
+        deadlineContent.style.cssText = "max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.3s ease, opacity 0.3s ease;";
+        
+        const deadlineDiv = document.createElement("div");
+        deadlineDiv.style.cssText = "display: flex; flex-direction: column; gap: 8px; padding-top: 10px;";
+        
+        // Toggle functionality
+        let deadlineExpanded = false;
+        deadlineHeader.onclick = () => {
+            deadlineExpanded = !deadlineExpanded;
+            if (deadlineExpanded) {
+                deadlineContent.style.maxHeight = "300px";
+                deadlineContent.style.opacity = "1";
+                deadlineToggle.style.transform = "rotate(90deg)";
+                // Load Deadline status when expanded
+                extension.updateDeadlineStatus();
+            } else {
+                deadlineContent.style.maxHeight = "0";
+                deadlineContent.style.opacity = "0";
+                deadlineToggle.style.transform = "rotate(0deg)";
+            }
+        };
+        
+        // Deadline status display
+        const deadlineStatus = document.createElement("div");
+        deadlineStatus.id = "deadline-status";
+        deadlineStatus.style.cssText = "font-size: 12px; color: #888; padding: 8px; background: #2a2a2a; border-radius: 4px;";
+        deadlineStatus.textContent = "Click to load Deadline status...";
+        
+        // Deadline action buttons
+        const deadlineActions = document.createElement("div");
+        deadlineActions.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+        
+        // Claim workers button
+        const claimWorkersBtn = document.createElement("button");
+        claimWorkersBtn.textContent = "Claim Workers";
+        claimWorkersBtn.style.cssText = `${BUTTON_STYLES.secondary}; font-size: 12px; padding: 6px 12px; background: #ff6b35; border-color: #ff6b35;`;
+        claimWorkersBtn.onclick = () => extension.claimDeadlineWorkers();
+        
+        // Release workers button
+        const releaseWorkersBtn = document.createElement("button");
+        releaseWorkersBtn.textContent = "Release All Workers";
+        releaseWorkersBtn.style.cssText = `${BUTTON_STYLES.secondary}; font-size: 12px; padding: 6px 12px; background: #dc3545; border-color: #dc3545;`;
+        releaseWorkersBtn.onclick = () => extension.releaseDeadlineWorkers();
+        
+        deadlineActions.appendChild(claimWorkersBtn);
+        deadlineActions.appendChild(releaseWorkersBtn);
+        
+        deadlineDiv.appendChild(deadlineStatus);
+        deadlineDiv.appendChild(deadlineActions);
+        deadlineContent.appendChild(deadlineDiv);
+        
+        deadlineSection.appendChild(deadlineHeader);
+        deadlineSection.appendChild(deadlineContent);
+        container.appendChild(deadlineSection);
+
         const summarySection = document.createElement("div");
         summarySection.style.cssText = "border-top: 1px solid #444; padding-top: 10px;";
         const summary = document.createElement("div");
