@@ -104,11 +104,15 @@ class DeadlineWorkerRegistration:
         
         try:
             # Register with master
+            # Try to get the actual Deadline worker name using Deadline API
+            deadline_worker_name = self._get_deadline_worker_name()
+            debug_log(f"Deadline worker name resolved to: {deadline_worker_name}")
             registration_data = {
                 'worker_id': worker_id,
                 'worker_ip': worker_ip,
                 'worker_port': worker_port,
-                'job_id': job_id
+                'job_id': job_id,
+                'deadline_worker_name': deadline_worker_name
             }
             
             response = requests.post(
@@ -146,6 +150,7 @@ class DeadlineWorkerRegistration:
     def _get_worker_id(self) -> str:
         """Generate unique worker ID"""
         hostname = socket.gethostname()
+        
         # Get task ID from Deadline - this might be in DEADLINE_WORKER_ID or DEADLINE_SLAVE_ID
         task_id = (os.environ.get('DEADLINE_TASK_ID') or 
                   os.environ.get('DEADLINE_WORKER_ID') or 
@@ -154,9 +159,13 @@ class DeadlineWorkerRegistration:
         job_id = (os.environ.get('DEADLINE_JOB_ID') or 
                  os.environ.get('DEADLINE_JOBID') or 
                  'unknown')
+        
+        # Include port to make worker ID unique when multiple workers on same machine
+        worker_port = self._get_worker_port()
+        
         # Truncate job_id to last 8 characters for readability
         job_short = job_id[-8:] if len(job_id) > 8 else job_id
-        return f"deadline-{hostname}-{job_short}-{task_id}"
+        return f"deadline-{hostname}-{job_short}-{task_id}-p{worker_port}"
     
     def _get_worker_ip(self) -> str:
         """Get worker's IP address"""
@@ -175,6 +184,44 @@ class DeadlineWorkerRegistration:
         except:
             # Ultimate fallback
             return '127.0.0.1'
+    
+    def _get_deadline_worker_name(self) -> str:
+        """Get the actual Deadline worker name"""
+        try:
+            # Try to get it from environment variable first
+            deadline_worker_name = os.environ.get('DEADLINE_SLAVE_NAME')
+            debug_log(f"DEADLINE_SLAVE_NAME: {deadline_worker_name}")
+            if deadline_worker_name and deadline_worker_name != 'unknown':
+                debug_log(f"Using DEADLINE_SLAVE_NAME: {deadline_worker_name}")
+                return deadline_worker_name
+                
+            # Try to import Deadline API and get worker name
+            try:
+                from Deadline.Scripting import RepositoryUtils
+                worker_name = RepositoryUtils.GetSlaveName()
+                debug_log(f"Using RepositoryUtils.GetSlaveName(): {worker_name}")
+                return worker_name
+            except Exception as e:
+                debug_log(f"Could not use RepositoryUtils.GetSlaveName(): {e}")
+                
+            # Try alternative environment variables
+            for env_var in ['DEADLINE_WORKER_NAME', 'COMPUTERNAME', 'HOSTNAME']:
+                name = os.environ.get(env_var)
+                if name:
+                    debug_log(f"Using {env_var}: {name}")
+                    return name
+                    
+        except Exception as e:
+            debug_log(f"Could not get Deadline worker name: {e}")
+            
+        # Fallback to hostname
+        try:
+            hostname = socket.gethostname()
+            debug_log(f"Using socket.gethostname(): {hostname}")
+            return hostname
+        except:
+            debug_log(f"All methods failed, using fallback")
+            return 'Unknown Worker'
     
     def _get_worker_port(self) -> int:
         """Get worker's ComfyUI port"""

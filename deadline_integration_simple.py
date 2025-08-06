@@ -170,7 +170,7 @@ class DeadlineIntegration:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def register_worker(self, worker_id: str, worker_ip: str, worker_port: int, job_id: str = None) -> Dict[str, Any]:
+    def register_worker(self, worker_id: str, worker_ip: str, worker_port: int, job_id: str = None, deadline_worker_name: str = None) -> Dict[str, Any]:
         """Register a Deadline worker and add to ComfyUI-Distributed config"""
         try:
             self.claimed_workers[worker_id] = {
@@ -182,7 +182,7 @@ class DeadlineIntegration:
             }
             
             # CRITICAL: Also add worker to ComfyUI-Distributed configuration
-            self._add_worker_to_distributed_config(worker_id, worker_ip, worker_port)
+            self._add_worker_to_distributed_config(worker_id, worker_ip, worker_port, deadline_worker_name)
             
             debug_log(f"✅ Registered worker: {worker_id} at {worker_ip}:{worker_port}")
             return {"success": True, "message": f"Worker {worker_id} registered and added to distributed config"}
@@ -234,7 +234,17 @@ class DeadlineIntegration:
         
         return active_workers
 
-    def _add_worker_to_distributed_config(self, worker_id: str, worker_ip: str, worker_port: int):
+    def _extract_hostname_from_worker_id(self, worker_id: str) -> str:
+        """Extract hostname from worker ID (format: deadline-HOSTNAME-job-task-port)"""
+        try:
+            parts = worker_id.split('-')
+            if len(parts) >= 2 and parts[0] == 'deadline':
+                return parts[1]  # Return the hostname part
+        except:
+            pass
+        return "Unknown"  # Fallback
+    
+    def _add_worker_to_distributed_config(self, worker_id: str, worker_ip: str, worker_port: int, deadline_worker_name: str = None):
         """Add worker to ComfyUI-Distributed configuration"""
         try:
             # Try absolute import first, then relative import as fallback
@@ -281,7 +291,7 @@ class DeadlineIntegration:
                 "cuda_device": 0,  # Default CUDA device
                 "enabled": True,
                 "source": "deadline",  # Mark as Deadline-managed
-                "name": f"Deadline Worker ({socket.gethostname()})",  # Add display name
+                "name": deadline_worker_name or f"Deadline Worker ({self._extract_hostname_from_worker_id(worker_id)})",  # Use actual Deadline worker name
                 "args": "",  # Empty args for Deadline workers
                 "platform": "deadline"  # Platform identifier
             }
@@ -402,7 +412,7 @@ class DeadlineIntegration:
             f.write("WorkerMode=True\n")  # Special flag for worker-only jobs
             f.write("ForceNewInstance=True\n")  # Force new ComfyUI instance
             f.write("UseExistingInstance=False\n")  # Don't reuse existing instance
-            f.write(f"WorkflowFile={dummy_workflow_file}\n")  # Provide dummy workflow
+            # Note: WorkflowFile deliberately omitted - plugin will use GetDataFilename() for auxiliary file
             
         debug_log(f"Created worker job files: {job_info_file}, {plugin_info_file}, {dummy_workflow_file}")
         return job_info_file, plugin_info_file, dummy_workflow_file
@@ -467,7 +477,8 @@ def register_api_endpoints():
             worker_ip = data.get('worker_ip')
             worker_port = data.get('worker_port')
             job_id = data.get('job_id')
-            result = deadline_integration.register_worker(worker_id, worker_ip, worker_port, job_id)
+            deadline_worker_name = data.get('deadline_worker_name')
+            result = deadline_integration.register_worker(worker_id, worker_ip, worker_port, job_id, deadline_worker_name)
             return web.json_response(result)
 
         async def deadline_worker_heartbeat_endpoint(request):
