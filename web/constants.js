@@ -19,6 +19,8 @@ export const BUTTON_STYLES = {
     log: "background-color: #685434;",
     clearMemory: "background-color: #555; padding: 6px 14px;",
     interrupt: "background-color: #555; padding: 6px 14px;",
+    claim: "background-color: #4a7c4a; padding: 6px 12px;",
+    release: "background-color: #7c4a4a; padding: 6px 12px;",
 };
 
 export const STATUS_COLORS = {

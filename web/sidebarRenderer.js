@@ -131,6 +131,7 @@ export async function renderSidebarContent(extension, el) {
         );
         clearMemButton.title = "Clear VRAM on all enabled worker GPUs (not master)";
         clearMemButton.style.cssText = BUTTON_STYLES.base + " flex: 1;" + BUTTON_STYLES.clearMemory;
+        clearMemButton.className = "distributed-button";
         
         const interruptButton = extension.ui.createButtonHelper(
             "Interrupt Workers",
@@ -139,6 +140,7 @@ export async function renderSidebarContent(extension, el) {
         );
         interruptButton.title = "Cancel/interrupt execution on all enabled worker GPUs";
         interruptButton.style.cssText = BUTTON_STYLES.base + " flex: 1;" + BUTTON_STYLES.interrupt;
+        interruptButton.className = "distributed-button";
         
         buttonRow.appendChild(clearMemButton);
         buttonRow.appendChild(interruptButton);
@@ -271,7 +273,7 @@ export async function renderSidebarContent(extension, el) {
         deadlineTitle.style.cssText = "margin: 0; font-size: 14px; color: #ff6b35;"; // Orange color for Deadline
         
         const deadlineToggle = document.createElement("span");
-        deadlineToggle.textContent = "▶"; // Right arrow when collapsed
+        deadlineToggle.textContent = "▼"; // Start with down arrow since we're expanded by default
         deadlineToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
         
         deadlineHeader.appendChild(deadlineTitle);
@@ -292,20 +294,32 @@ export async function renderSidebarContent(extension, el) {
         const deadlineDiv = document.createElement("div");
         deadlineDiv.style.cssText = "display: flex; flex-direction: column; gap: 8px; padding-top: 10px;";
         
-        // Toggle functionality
-        let deadlineExpanded = false;
+        // Toggle functionality - start expanded
+        let deadlineExpanded = true;
+        
+        // Set initial expanded state
+        deadlineContent.style.maxHeight = "500px";
+        deadlineContent.style.opacity = "1";
+        deadlineToggle.style.transform = "rotate(90deg)";
+        deadlineToggle.textContent = "▼"; // Down arrow when expanded
+        
+        // Load status immediately since we start expanded
+        setTimeout(() => extension.updateDeadlineStatus(), 100);
+        
         deadlineHeader.onclick = () => {
             deadlineExpanded = !deadlineExpanded;
             if (deadlineExpanded) {
-                deadlineContent.style.maxHeight = "300px";
+                deadlineContent.style.maxHeight = "500px";
                 deadlineContent.style.opacity = "1";
                 deadlineToggle.style.transform = "rotate(90deg)";
+                deadlineToggle.textContent = "▼";
                 // Load Deadline status when expanded
                 extension.updateDeadlineStatus();
             } else {
                 deadlineContent.style.maxHeight = "0";
                 deadlineContent.style.opacity = "0";
                 deadlineToggle.style.transform = "rotate(0deg)";
+                deadlineToggle.textContent = "▶";
             }
         };
         
@@ -499,12 +513,13 @@ export async function renderSidebarContent(extension, el) {
         
         // Deadline action buttons
         const deadlineActions = document.createElement("div");
-        deadlineActions.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+        deadlineActions.style.cssText = "display: flex; flex-direction: column; gap: 6px; margin-top: 8px;";
         
         // Claim workers button
         const claimWorkersBtn = document.createElement("button");
         claimWorkersBtn.textContent = "Claim Workers";
-        claimWorkersBtn.style.cssText = `${BUTTON_STYLES.secondary}; font-size: 12px; padding: 6px 12px; background: #ff6b35; border-color: #ff6b35;`;
+        claimWorkersBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.claim;
+        claimWorkersBtn.className = "distributed-button";
         claimWorkersBtn.onclick = () => {
             const count = parseInt(document.getElementById('deadline-worker-count').value) || 4;
             extension.claimDeadlineWorkers(count);
@@ -513,8 +528,13 @@ export async function renderSidebarContent(extension, el) {
         // Release workers button
         const releaseWorkersBtn = document.createElement("button");
         releaseWorkersBtn.textContent = "Release All Workers";
-        releaseWorkersBtn.style.cssText = `${BUTTON_STYLES.secondary}; font-size: 12px; padding: 6px 12px; background: #dc3545; border-color: #dc3545;`;
+        releaseWorkersBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.release;
+        releaseWorkersBtn.className = "distributed-button";
+        releaseWorkersBtn.title = "Release all claimed Deadline workers";
         releaseWorkersBtn.onclick = () => extension.releaseDeadlineWorkers();
+        
+        // Debug: Log button creation
+        console.log("Created Release All Workers button:", releaseWorkersBtn);
         
         deadlineActions.appendChild(claimWorkersBtn);
         deadlineActions.appendChild(releaseWorkersBtn);
