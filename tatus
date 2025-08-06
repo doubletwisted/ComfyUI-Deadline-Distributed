@@ -1,0 +1,3 @@
+[33m9f11aed[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m Fix worker display name and unique IDs
+[33mfb96c41[m Add gpu_config.json to .gitignore - machine-specific config
+[33mf7e9723[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Fix UI button visibility and styling

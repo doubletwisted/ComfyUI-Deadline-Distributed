@@ -1482,6 +1482,35 @@ class DistributedExtension {
         }
     }
 
+    async removeAllRemoteWorkers() {
+        try {
+            this.log(`🔄 Removing all remote workers...`, 'info');
+            
+            const response = await fetch('/deadline/remove_all_remote_workers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                this.log(`✅ ${result.message}`, 'info');
+                // Refresh the UI to show updated worker list
+                if (this.panelElement) {
+                    const { renderSidebarContent } = await import('./sidebarRenderer.js');
+                    renderSidebarContent(this, this.panelElement);
+                }
+                // Also update deadline status
+                setTimeout(() => this.updateDeadlineStatus(), 500);
+            } else {
+                this.log(`❌ Failed to remove remote workers: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.log(`❌ Error removing remote workers: ${error.message}`, 'error');
+        }
+    }
+
     updateActiveWorkersList(workers) {
         // Find or create workers list container in the deadline section
         let workersList = document.getElementById('deadline-workers-list');

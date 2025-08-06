@@ -533,11 +533,21 @@ export async function renderSidebarContent(extension, el) {
         releaseWorkersBtn.title = "Release all claimed Deadline workers";
         releaseWorkersBtn.onclick = () => extension.releaseDeadlineWorkers();
         
+        // Remove all remote workers button
+        const removeRemoteWorkersBtn = document.createElement("button");
+        removeRemoteWorkersBtn.textContent = "Remove All Remote Workers";
+        removeRemoteWorkersBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.clearMemory;
+        removeRemoteWorkersBtn.className = "distributed-button";
+        removeRemoteWorkersBtn.title = "Remove all remote/deadline workers from configuration";
+        removeRemoteWorkersBtn.onclick = () => extension.removeAllRemoteWorkers();
+        
         // Debug: Log button creation
         console.log("Created Release All Workers button:", releaseWorkersBtn);
+        console.log("Created Remove All Remote Workers button:", removeRemoteWorkersBtn);
         
         deadlineActions.appendChild(claimWorkersBtn);
         deadlineActions.appendChild(releaseWorkersBtn);
+        deadlineActions.appendChild(removeRemoteWorkersBtn);
         
         deadlineDiv.appendChild(workerCountContainer);
         deadlineDiv.appendChild(priorityContainer);

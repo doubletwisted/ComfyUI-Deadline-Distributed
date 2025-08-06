@@ -171,20 +171,50 @@ class DeadlineIntegration:
             return {"success": False, "error": str(e)}
 
     def register_worker(self, worker_id: str, worker_ip: str, worker_port: int, job_id: str = None, deadline_worker_name: str = None) -> Dict[str, Any]:
-        """Register a Deadline worker and add to ComfyUI-Distributed config"""
+        """Register a Deadline worker and add to ComfyUI-Distributed config with duplicate prevention"""
         try:
-            self.claimed_workers[worker_id] = {
-                "id": worker_id,
-                "ip": worker_ip,
-                "port": worker_port,
-                "job_id": job_id,
-                "last_seen": time.time()
-            }
+            # Check for existing registrations from the same host+port
+            existing_duplicate = None
+            for existing_id, worker_info in self.claimed_workers.items():
+                if (worker_info["ip"] == worker_ip and 
+                    worker_info["port"] == worker_port and 
+                    existing_id != worker_id):
+                    existing_duplicate = existing_id
+                    debug_log(f"Found existing registration for {worker_ip}:{worker_port} with ID {existing_id}")
+                    break
+            
+            # Remove duplicate if found
+            if existing_duplicate:
+                del self.claimed_workers[existing_duplicate]
+                debug_log(f"🗑️ Removed duplicate worker registration: {existing_duplicate}")
+            
+            # Check if this exact worker is already registered
+            if worker_id in self.claimed_workers:
+                # Update existing registration
+                self.claimed_workers[worker_id].update({
+                    "ip": worker_ip,
+                    "port": worker_port,
+                    "job_id": job_id,
+                    "last_seen": time.time()
+                })
+                debug_log(f"✅ Updated existing worker registration: {worker_id}")
+            else:
+                # New registration
+                self.claimed_workers[worker_id] = {
+                    "id": worker_id,
+                    "ip": worker_ip,
+                    "port": worker_port,
+                    "job_id": job_id,
+                    "last_seen": time.time()
+                }
+                debug_log(f"✅ New worker registered: {worker_id} at {worker_ip}:{worker_port}")
             
             # CRITICAL: Also add worker to ComfyUI-Distributed configuration
             self._add_worker_to_distributed_config(worker_id, worker_ip, worker_port, deadline_worker_name)
             
-            debug_log(f"✅ Registered worker: {worker_id} at {worker_ip}:{worker_port}")
+            # Automatically clean up duplicates and stale workers
+            self._cleanup_duplicates_automatically()
+            
             return {"success": True, "message": f"Worker {worker_id} registered and added to distributed config"}
         except Exception as e:
             debug_log(f"Error registering worker: {e}")
@@ -220,19 +250,154 @@ class DeadlineIntegration:
             return {"success": False, "error": str(e)}
 
     def get_active_workers(self) -> List[Dict[str, Any]]:
-        """Get list of active workers"""
+        """Get list of active workers and clean up stale ones"""
         current_time = time.time()
         active_workers = []
+        stale_workers = []
         
         for worker_id, worker_info in list(self.claimed_workers.items()):
             if current_time - worker_info["last_seen"] < self.worker_heartbeat_timeout:
                 active_workers.append(worker_info)
             else:
-                # Remove stale workers
-                del self.claimed_workers[worker_id]
-                debug_log(f"Removed stale worker: {worker_id}")
+                # Mark for removal
+                stale_workers.append(worker_id)
+        
+        # Remove stale workers and their distributed config entries
+        for worker_id in stale_workers:
+            del self.claimed_workers[worker_id]
+            self._remove_worker_from_distributed_config(worker_id)
+            debug_log(f"🗑️ Removed stale worker: {worker_id}")
+        
+        # Run automatic cleanup periodically when checking status
+        self._cleanup_duplicates_automatically()
         
         return active_workers
+
+    def remove_all_remote_workers(self) -> Dict[str, Any]:
+        """Remove all remote/deadline workers from the distributed config"""
+        try:
+            # Try to import config module
+            try:
+                import importlib.util
+                import os
+                current_dir = os.path.dirname(__file__)
+                config_path = os.path.join(current_dir, 'utils', 'config.py')
+                
+                spec = importlib.util.spec_from_file_location("utils.config", config_path)
+                config_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(config_module)
+                
+                load_config = config_module.load_config
+                save_config = config_module.save_config
+            except Exception:
+                from .utils.config import load_config, save_config
+            
+            config = load_config()
+            if 'workers' not in config:
+                return {"success": True, "message": "No workers to remove"}
+            
+            original_count = len(config['workers'])
+            
+            # Keep only non-deadline/non-remote workers
+            local_workers = []
+            removed_workers = []
+            
+            for worker in config['workers']:
+                # Remove workers that are deadline/remote sourced
+                if worker.get('source') == 'deadline' or worker.get('platform') == 'deadline':
+                    removed_workers.append(worker.get('id', 'unknown'))
+                    debug_log(f"🗑️ Removing remote worker: {worker.get('id')} at {worker.get('host')}:{worker.get('port')}")
+                else:
+                    # Keep local workers
+                    local_workers.append(worker)
+            
+            # Update config with only local workers
+            config['workers'] = local_workers
+            save_config(config)
+            
+            # Also clear claimed workers registry
+            remote_claimed = [wid for wid in self.claimed_workers.keys()]
+            for worker_id in remote_claimed:
+                del self.claimed_workers[worker_id]
+            
+            removed_count = len(removed_workers)
+            message = f"Removed {removed_count} remote workers (was {original_count}, now {len(local_workers)} local workers)"
+            debug_log(message)
+            return {"success": True, "message": message, "removed": removed_count, "removed_workers": removed_workers}
+            
+        except Exception as e:
+            debug_log(f"Error removing remote workers: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _cleanup_duplicates_automatically(self):
+        """Internal method to automatically clean up duplicates during registration"""
+        try:
+            # This is called automatically during worker registration
+            # It's more targeted than the full cleanup - just removes obvious duplicates
+            
+            # Try to import config module
+            try:
+                import importlib.util
+                import os
+                current_dir = os.path.dirname(__file__)
+                config_path = os.path.join(current_dir, 'utils', 'config.py')
+                
+                spec = importlib.util.spec_from_file_location("utils.config", config_path)
+                config_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(config_module)
+                
+                load_config = config_module.load_config
+                save_config = config_module.save_config
+            except Exception:
+                from .utils.config import load_config, save_config
+            
+            config = load_config()
+            if 'workers' not in config:
+                return
+            
+            # Quick duplicate removal - keep most recent by host+port for deadline workers
+            current_time = time.time()
+            stale_threshold = 300  # 5 minutes
+            
+            seen_combinations = {}
+            workers_to_keep = []
+            
+            for worker in config['workers']:
+                if worker.get('source') != 'deadline':
+                    workers_to_keep.append(worker)
+                    continue
+                
+                # Check if worker is stale
+                last_registered = worker.get('last_registered', 0)
+                if current_time - last_registered > stale_threshold:
+                    debug_log(f"🗑️ Auto-removing stale worker: {worker.get('id')}")
+                    continue
+                
+                host_port = f"{worker.get('host')}:{worker.get('port')}"
+                
+                if host_port in seen_combinations:
+                    existing_worker = seen_combinations[host_port]
+                    existing_time = existing_worker.get('last_registered', 0)
+                    
+                    if last_registered > existing_time:
+                        # Replace with newer worker
+                        workers_to_keep = [w for w in workers_to_keep if w.get('id') != existing_worker.get('id')]
+                        seen_combinations[host_port] = worker
+                        workers_to_keep.append(worker)
+                        debug_log(f"🗑️ Auto-replaced older duplicate: {existing_worker.get('id')} with {worker.get('id')}")
+                    # else: skip current worker as it's older
+                else:
+                    seen_combinations[host_port] = worker
+                    workers_to_keep.append(worker)
+            
+            # Save if there were changes
+            if len(workers_to_keep) != len(config['workers']):
+                config['workers'] = workers_to_keep
+                save_config(config)
+                
+        except Exception as e:
+            debug_log(f"Error in automatic cleanup: {e}")
+            # Don't fail registration if cleanup fails
 
     def _extract_hostname_from_worker_id(self, worker_id: str) -> str:
         """Extract hostname from worker ID (format: deadline-HOSTNAME-job-task-port)"""
@@ -245,7 +410,7 @@ class DeadlineIntegration:
         return "Unknown"  # Fallback
     
     def _add_worker_to_distributed_config(self, worker_id: str, worker_ip: str, worker_port: int, deadline_worker_name: str = None):
-        """Add worker to ComfyUI-Distributed configuration"""
+        """Add worker to ComfyUI-Distributed configuration with duplicate prevention"""
         try:
             # Try absolute import first, then relative import as fallback
             try:
@@ -276,12 +441,40 @@ class DeadlineIntegration:
             if 'workers' not in config:
                 config['workers'] = []
             
-            # Check if worker already exists
-            existing_worker = None
+            # Enhanced duplicate detection
+            existing_worker_idx = None
+            duplicates_to_remove = []
+            hostname = self._extract_hostname_from_worker_id(worker_id)
+            
+            # Check for duplicates using multiple criteria
             for i, worker in enumerate(config['workers']):
+                worker_hostname = self._extract_hostname_from_worker_id(worker.get('id', ''))
+                
+                # Exact ID match
                 if worker.get('id') == worker_id:
-                    existing_worker = i
+                    existing_worker_idx = i
+                    debug_log(f"Found exact ID match for worker {worker_id}")
                     break
+                
+                # Same host+port combination (likely duplicate from reconnection)
+                elif (worker.get('host') == worker_ip and 
+                      worker.get('port') == worker_port and 
+                      worker.get('source') == 'deadline'):
+                    duplicates_to_remove.append(i)
+                    debug_log(f"Found duplicate by host+port: {worker.get('id')} at {worker_ip}:{worker_port}")
+                
+                # Same hostname with deadline source (multiple entries for same machine)
+                elif (worker_hostname == hostname and 
+                      worker.get('source') == 'deadline' and
+                      deadline_worker_name and 
+                      worker.get('name', '').startswith(deadline_worker_name)):
+                    duplicates_to_remove.append(i)
+                    debug_log(f"Found duplicate by hostname+name: {worker.get('id')} for {deadline_worker_name}")
+            
+            # Remove duplicates in reverse order to maintain indices
+            for idx in sorted(duplicates_to_remove, reverse=True):
+                removed_worker = config['workers'].pop(idx)
+                debug_log(f"🗑️ Removed duplicate worker: {removed_worker.get('id')} at {removed_worker.get('host')}:{removed_worker.get('port')}")
             
             # Create worker entry
             worker_config = {
@@ -291,19 +484,37 @@ class DeadlineIntegration:
                 "cuda_device": 0,  # Default CUDA device
                 "enabled": True,
                 "source": "deadline",  # Mark as Deadline-managed
-                "name": deadline_worker_name or f"Deadline Worker ({self._extract_hostname_from_worker_id(worker_id)})",  # Use actual Deadline worker name
+                "name": deadline_worker_name or f"Deadline Worker ({hostname})",  # Use actual Deadline worker name
                 "args": "",  # Empty args for Deadline workers
-                "platform": "deadline"  # Platform identifier
+                "platform": "deadline",  # Platform identifier
+                "last_registered": time.time()  # Track registration time for cleanup
             }
             
-            if existing_worker is not None:
+            if existing_worker_idx is not None:
                 # Update existing worker
-                config['workers'][existing_worker] = worker_config
-                debug_log(f"✅ Updated worker {worker_id} in distributed config")
+                config['workers'][existing_worker_idx] = worker_config
+                debug_log(f"✅ Updated existing worker {worker_id} in distributed config")
             else:
                 # Add new worker
                 config['workers'].append(worker_config)
-                debug_log(f"✅ Added worker {worker_id} to distributed config")
+                debug_log(f"✅ Added new worker {worker_id} to distributed config")
+            
+            # Clean up old deadline workers that haven't been seen recently
+            current_time = time.time()
+            stale_threshold = 300  # 5 minutes
+            workers_to_remove = []
+            
+            for i, worker in enumerate(config['workers']):
+                if (worker.get('source') == 'deadline' and 
+                    worker.get('id') != worker_id):  # Don't remove the worker we just added
+                    last_seen = worker.get('last_registered', 0)
+                    if current_time - last_seen > stale_threshold:
+                        workers_to_remove.append(i)
+            
+            # Remove stale workers
+            for idx in sorted(workers_to_remove, reverse=True):
+                stale_worker = config['workers'].pop(idx)
+                debug_log(f"🗑️ Removed stale deadline worker: {stale_worker.get('id')}")
             
             # Save config
             save_config(config)
@@ -493,6 +704,16 @@ def register_api_endpoints():
             result = deadline_integration.unregister_worker(worker_id)
             return web.json_response(result)
 
+        async def deadline_remove_remote_workers_endpoint(request):
+            """HTTP endpoint for removing all remote workers"""
+            result = deadline_integration.remove_all_remote_workers()
+            return web.json_response(result)
+
+        async def deadline_get_workers_endpoint(request):
+            """HTTP endpoint for getting active workers"""
+            workers = deadline_integration.get_active_workers()
+            return web.json_response({"success": True, "workers": workers})
+
         # Register endpoints
         server.PromptServer.instance.routes.get("/deadline/status")(deadline_status_endpoint)
         server.PromptServer.instance.routes.post("/deadline/claim_workers")(deadline_claim_workers_endpoint)
@@ -500,6 +721,8 @@ def register_api_endpoints():
         server.PromptServer.instance.routes.post("/deadline/register_worker")(deadline_register_worker_endpoint)
         server.PromptServer.instance.routes.post("/deadline/worker_heartbeat")(deadline_worker_heartbeat_endpoint)
         server.PromptServer.instance.routes.post("/deadline/unregister_worker")(deadline_unregister_worker_endpoint)
+        server.PromptServer.instance.routes.post("/deadline/remove_all_remote_workers")(deadline_remove_remote_workers_endpoint)
+        server.PromptServer.instance.routes.get("/deadline/workers")(deadline_get_workers_endpoint)
         
         debug_log("✅ Deadline integration API endpoints registered")
         return True
