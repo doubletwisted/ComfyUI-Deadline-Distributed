@@ -423,6 +423,102 @@ async def update_setting_endpoint(request):
     except Exception as e:
         return await handle_api_error(request, e, 400)
 
+@server.PromptServer.instance.routes.post("/distributed/config/update_deadline")
+async def update_deadline_endpoint(request):
+    """Updates deadline configuration settings."""
+    try:
+        data = await request.json()
+        config = load_config()
+        
+        # Ensure deadline section exists
+        if 'deadline' not in config:
+            config['deadline'] = {"priority": 50, "pool": "none", "group": "none"}
+        
+        # Update deadline settings
+        if 'priority' in data:
+            config['deadline']['priority'] = int(data['priority'])
+        if 'pool' in data:
+            config['deadline']['pool'] = str(data['pool'])
+        if 'group' in data:
+            config['deadline']['group'] = str(data['group'])
+        
+        if save_config(config):
+            return web.json_response({"status": "success", "deadline": config['deadline']})
+        else:
+            return await handle_api_error(request, "Failed to save config")
+    except Exception as e:
+        return await handle_api_error(request, e, 400)
+
+@server.PromptServer.instance.routes.get("/distributed/deadline/pools")
+async def get_deadline_pools_endpoint(request):
+    """Get available Deadline pools."""
+    try:
+        # Import deadline command helper from the plugin
+        try:
+            import sys
+            import os
+            
+            # Try to import from the deadline plugin
+            plugin_path = None
+            for path in sys.path:
+                potential_path = os.path.join(path, "ComfyUI-Deadline-Plugin")
+                if os.path.exists(potential_path):
+                    plugin_path = potential_path
+                    break
+            
+            if plugin_path:
+                sys.path.insert(0, plugin_path)
+                from deadline_submit import DeadlineCommandHelper
+                
+                pools = DeadlineCommandHelper.call_deadline_command(["-pools"], hide_window=True)
+                pool_list = [line.strip() for line in pools.splitlines() if line.strip()]
+                pool_list = pool_list if pool_list else ["none"]
+                
+                return web.json_response({"status": "success", "pools": pool_list})
+            else:
+                return web.json_response({"status": "error", "error": "Deadline plugin not found", "pools": ["none"]})
+                
+        except Exception as import_error:
+            return web.json_response({"status": "error", "error": f"Could not access Deadline: {str(import_error)}", "pools": ["none"]})
+            
+    except Exception as e:
+        return await handle_api_error(request, e, 400)
+
+@server.PromptServer.instance.routes.get("/distributed/deadline/groups")
+async def get_deadline_groups_endpoint(request):
+    """Get available Deadline groups."""
+    try:
+        # Import deadline command helper from the plugin
+        try:
+            import sys
+            import os
+            
+            # Try to import from the deadline plugin
+            plugin_path = None
+            for path in sys.path:
+                potential_path = os.path.join(path, "ComfyUI-Deadline-Plugin")
+                if os.path.exists(potential_path):
+                    plugin_path = potential_path
+                    break
+            
+            if plugin_path:
+                sys.path.insert(0, plugin_path)
+                from deadline_submit import DeadlineCommandHelper
+                
+                groups = DeadlineCommandHelper.call_deadline_command(["-groups"], hide_window=True)
+                group_list = [line.strip() for line in groups.splitlines() if line.strip()]
+                group_list = group_list if group_list else ["none"]
+                
+                return web.json_response({"status": "success", "groups": group_list})
+            else:
+                return web.json_response({"status": "error", "error": "Deadline plugin not found", "groups": ["none"]})
+                
+        except Exception as import_error:
+            return web.json_response({"status": "error", "error": f"Could not access Deadline: {str(import_error)}", "groups": ["none"]})
+            
+    except Exception as e:
+        return await handle_api_error(request, e, 400)
+
 @server.PromptServer.instance.routes.post("/distributed/config/update_master")
 async def update_master_endpoint(request):
     """Updates master configuration."""
@@ -2210,10 +2306,18 @@ class ImageBatchDivider:
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
     "DistributedSeed": DistributedSeed,
-    "ImageBatchDivider": ImageBatchDivider
+    "ImageBatchDivider": ImageBatchDivider,
+    # Deadline-named versions for consistency
+    "DeadlineDistributedCollector": DistributedCollectorNode,
+    "DeadlineDistributedSeed": DistributedSeed,
+    "DeadlineImageBatchDivider": ImageBatchDivider
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
-    "DistributedSeed": "Distributed Seed",
-    "ImageBatchDivider": "Image Batch Divider"
+    "DistributedSeed": "Distributed Seed", 
+    "ImageBatchDivider": "Image Batch Divider",
+    # Deadline-named versions for consistency
+    "DeadlineDistributedCollector": "Deadline Distributed Collector",
+    "DeadlineDistributedSeed": "Deadline Distributed Seed",
+    "DeadlineImageBatchDivider": "Deadline Image Batch Divider"
 }

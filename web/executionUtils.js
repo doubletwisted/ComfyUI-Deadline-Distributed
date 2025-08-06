@@ -46,8 +46,14 @@ function convertPathsForPlatform(apiPrompt, targetSeparator) {
 export function setupInterceptor(extension) {
     api.queuePrompt = async (number, prompt) => {
         if (extension.isEnabled) {
-            const hasCollector = findNodesByClass(prompt.output, "DistributedCollector").length > 0;
-            const hasDistUpscale = findNodesByClass(prompt.output, "UltimateSDUpscaleDistributed").length > 0;
+            const hasCollector = (
+                findNodesByClass(prompt.output, "DistributedCollector").length > 0 ||
+                findNodesByClass(prompt.output, "DeadlineDistributedCollector").length > 0
+            );
+            const hasDistUpscale = (
+                findNodesByClass(prompt.output, "UltimateSDUpscaleDistributed").length > 0 ||
+                findNodesByClass(prompt.output, "DeadlineUltimateSDUpscaleDistributed").length > 0
+            );
             
             if (hasCollector || hasDistUpscale) {
                 const result = await executeParallelDistributed(extension, prompt);
@@ -115,9 +121,15 @@ export async function executeParallelDistributed(extension, promptWrapper) {
             }
         }
         
-        // Find all distributed nodes in the workflow
-        const collectorNodes = findNodesByClass(promptWrapper.output, "DistributedCollector");
-        const upscaleNodes = findNodesByClass(promptWrapper.output, "UltimateSDUpscaleDistributed");
+        // Find all distributed nodes in the workflow (both original and Deadline versions)
+        const collectorNodes = [
+            ...findNodesByClass(promptWrapper.output, "DistributedCollector"),
+            ...findNodesByClass(promptWrapper.output, "DeadlineDistributedCollector")
+        ];
+        const upscaleNodes = [
+            ...findNodesByClass(promptWrapper.output, "UltimateSDUpscaleDistributed"),
+            ...findNodesByClass(promptWrapper.output, "DeadlineUltimateSDUpscaleDistributed")
+        ];
         const allDistributedNodes = [...collectorNodes, ...upscaleNodes];
         
         // Map original node IDs to truly unique job IDs for this specific run
@@ -176,9 +188,15 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
     let jobApiPrompt = JSON.parse(JSON.stringify(baseApiPrompt));
     const isMaster = participantId === 'master';
     
-    // Find all distributed nodes once (before pruning)
-    const collectorNodes = findNodesByClass(jobApiPrompt, "DistributedCollector");
-    const upscaleNodes = findNodesByClass(jobApiPrompt, "UltimateSDUpscaleDistributed");
+    // Find all distributed nodes once (before pruning) - both original and Deadline versions
+    const collectorNodes = [
+        ...findNodesByClass(jobApiPrompt, "DistributedCollector"),
+        ...findNodesByClass(jobApiPrompt, "DeadlineDistributedCollector")
+    ];
+    const upscaleNodes = [
+        ...findNodesByClass(jobApiPrompt, "UltimateSDUpscaleDistributed"),
+        ...findNodesByClass(jobApiPrompt, "DeadlineUltimateSDUpscaleDistributed")
+    ];
     const allDistributedNodes = [...collectorNodes, ...upscaleNodes];
     
     // For workers, handle platform-specific path conversion
@@ -229,8 +247,11 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
         }
     }
     
-    // Handle Distributed seed nodes
-    const distributorNodes = findNodesByClass(jobApiPrompt, "DistributedSeed");
+    // Handle Distributed seed nodes (both original and Deadline versions)
+    const distributorNodes = [
+        ...findNodesByClass(jobApiPrompt, "DistributedSeed"),
+        ...findNodesByClass(jobApiPrompt, "DeadlineDistributedSeed")
+    ];
     if (distributorNodes.length > 0) {
         extension.log(`Found ${distributorNodes.length} seed node(s)`, "debug");
     }
@@ -254,6 +275,10 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             jobApiPrompt, 
             collector.id, 
             'UltimateSDUpscaleDistributed'
+        ) || hasUpstreamNode(
+            jobApiPrompt, 
+            collector.id, 
+            'DeadlineUltimateSDUpscaleDistributed'
         );
         
         if (hasUpstreamDistributedUpscaler) {

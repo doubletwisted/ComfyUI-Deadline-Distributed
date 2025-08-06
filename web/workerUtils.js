@@ -162,8 +162,8 @@ export function findCollectorUpstreamNodes(apiPrompt, collectorIds) {
 export function pruneWorkflowForWorker(extension, apiPrompt, distributedNodes = null) {
     // Find all distributed nodes if not provided
     if (!distributedNodes) {
-        const collectorNodes = findNodesByClass(apiPrompt, "DistributedCollector");
-        const upscaleNodes = findNodesByClass(apiPrompt, "UltimateSDUpscaleDistributed");
+            const collectorNodes = findNodesByClass(apiPrompt, "DeadlineDistributedCollector");
+    const upscaleNodes = findNodesByClass(apiPrompt, "DeadlineUltimateSDUpscaleDistributed");
         distributedNodes = [...collectorNodes, ...upscaleNodes];
     }
     

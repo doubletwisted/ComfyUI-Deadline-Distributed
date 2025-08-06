@@ -309,11 +309,193 @@ export async function renderSidebarContent(extension, el) {
             }
         };
         
+        // Worker count input
+        const workerCountContainer = document.createElement("div");
+        workerCountContainer.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;";
+        
+        const workerCountLabel = document.createElement("label");
+        workerCountLabel.textContent = "Workers:";
+        workerCountLabel.style.cssText = "font-size: 12px; color: #ccc; min-width: 50px;";
+        
+        const workerCountInput = document.createElement("input");
+        workerCountInput.type = "number";
+        workerCountInput.id = "deadline-worker-count";
+        workerCountInput.value = "4"; // Default to 4 workers
+        workerCountInput.min = "1";
+        workerCountInput.max = "32";
+        workerCountInput.style.cssText = "flex: 1; padding: 4px 8px; background: #2a2a2a; border: 1px solid #555; border-radius: 4px; color: #ccc; font-size: 12px;";
+        
+        workerCountContainer.appendChild(workerCountLabel);
+        workerCountContainer.appendChild(workerCountInput);
+        
+        // Priority input
+        const priorityContainer = document.createElement("div");
+        priorityContainer.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;";
+        
+        const priorityLabel = document.createElement("label");
+        priorityLabel.textContent = "Priority:";
+        priorityLabel.style.cssText = "font-size: 12px; color: #ccc; min-width: 50px;";
+        
+        const priorityInput = document.createElement("input");
+        priorityInput.type = "number";
+        priorityInput.id = "deadline-priority";
+        priorityInput.value = "50"; // Default priority
+        priorityInput.min = "0";
+        priorityInput.max = "100";
+        priorityInput.style.cssText = "flex: 1; padding: 4px 8px; background: #2a2a2a; border: 1px solid #555; border-radius: 4px; color: #ccc; font-size: 12px;";
+        
+        priorityContainer.appendChild(priorityLabel);
+        priorityContainer.appendChild(priorityInput);
+        
+        // Pool dropdown
+        const poolContainer = document.createElement("div");
+        poolContainer.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;";
+        
+        const poolLabel = document.createElement("label");
+        poolLabel.textContent = "Pool:";
+        poolLabel.style.cssText = "font-size: 12px; color: #ccc; min-width: 50px;";
+        
+        const poolSelect = document.createElement("select");
+        poolSelect.id = "deadline-pool";
+        poolSelect.style.cssText = "flex: 1; padding: 4px 8px; background: #2a2a2a; border: 1px solid #555; border-radius: 4px; color: #ccc; font-size: 12px;";
+        
+        // Add default option
+        const poolDefaultOption = document.createElement("option");
+        poolDefaultOption.value = "none";
+        poolDefaultOption.textContent = "none";
+        poolSelect.appendChild(poolDefaultOption);
+        
+        poolContainer.appendChild(poolLabel);
+        poolContainer.appendChild(poolSelect);
+        
+        // Group dropdown
+        const groupContainer = document.createElement("div");
+        groupContainer.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 8px;";
+        
+        const groupLabel = document.createElement("label");
+        groupLabel.textContent = "Group:";
+        groupLabel.style.cssText = "font-size: 12px; color: #ccc; min-width: 50px;";
+        
+        const groupSelect = document.createElement("select");
+        groupSelect.id = "deadline-group";
+        groupSelect.style.cssText = "flex: 1; padding: 4px 8px; background: #2a2a2a; border: 1px solid #555; border-radius: 4px; color: #ccc; font-size: 12px;";
+        
+        // Add default option
+        const groupDefaultOption = document.createElement("option");
+        groupDefaultOption.value = "none";
+        groupDefaultOption.textContent = "none";
+        groupSelect.appendChild(groupDefaultOption);
+        
+        groupContainer.appendChild(groupLabel);
+        groupContainer.appendChild(groupSelect);
+        
+        // Function to populate pools dropdown
+        const populatePools = async () => {
+            try {
+                const response = await extension.api.getDeadlinePools();
+                if (response.status === 'success' && response.pools) {
+                    // Clear existing options except default
+                    poolSelect.innerHTML = '';
+                    const noneOption = document.createElement("option");
+                    noneOption.value = "none";
+                    noneOption.textContent = "none";
+                    poolSelect.appendChild(noneOption);
+                    
+                    // Add pools from Deadline
+                    response.pools.forEach(pool => {
+                        if (pool !== "none") {
+                            const option = document.createElement("option");
+                            option.value = pool;
+                            option.textContent = pool;
+                            poolSelect.appendChild(option);
+                        }
+                    });
+                    
+                    // Restore saved selection
+                    const savedPool = extension.config?.deadline?.pool;
+                    if (savedPool) {
+                        poolSelect.value = savedPool;
+                    }
+                }
+            } catch (error) {
+                console.warn("Could not load Deadline pools:", error);
+            }
+        };
+        
+        // Function to populate groups dropdown
+        const populateGroups = async () => {
+            try {
+                const response = await extension.api.getDeadlineGroups();
+                if (response.status === 'success' && response.groups) {
+                    // Clear existing options except default
+                    groupSelect.innerHTML = '';
+                    const noneOption = document.createElement("option");
+                    noneOption.value = "none";
+                    noneOption.textContent = "none";
+                    groupSelect.appendChild(noneOption);
+                    
+                    // Add groups from Deadline
+                    response.groups.forEach(group => {
+                        if (group !== "none") {
+                            const option = document.createElement("option");
+                            option.value = group;
+                            option.textContent = group;
+                            groupSelect.appendChild(option);
+                        }
+                    });
+                    
+                    // Restore saved selection
+                    const savedGroup = extension.config?.deadline?.group;
+                    if (savedGroup) {
+                        groupSelect.value = savedGroup;
+                    }
+                }
+            } catch (error) {
+                console.warn("Could not load Deadline groups:", error);
+            }
+        };
+        
+        // Load saved deadline settings from config
+        const savedDeadlineSettings = extension.config?.deadline || {};
+        if (savedDeadlineSettings.priority !== undefined) {
+            priorityInput.value = savedDeadlineSettings.priority;
+        }
+        
+        // Add refresh button for pools/groups
+        const refreshContainer = document.createElement("div");
+        refreshContainer.style.cssText = "display: flex; justify-content: center; margin-bottom: 8px;";
+        
+        const refreshButton = document.createElement("button");
+        refreshButton.textContent = "🔄 Refresh Pools/Groups";
+        refreshButton.style.cssText = "padding: 4px 8px; background: #444; border: 1px solid #666; border-radius: 4px; color: #ccc; font-size: 11px; cursor: pointer;";
+        refreshButton.onclick = () => {
+            populatePools();
+            populateGroups();
+        };
+        
+        refreshContainer.appendChild(refreshButton);
+        
+        // Populate dropdowns initially
+        populatePools();
+        populateGroups();
+        
+        // Add change event listeners to save settings
+        const saveDeadlineSettings = () => {
+            const priority = parseInt(priorityInput.value) || 50;
+            const pool = poolSelect.value || "none";
+            const group = groupSelect.value || "none";
+            extension.updateDeadlineSettings(priority, pool, group);
+        };
+        
+        priorityInput.onchange = saveDeadlineSettings;
+        poolSelect.onchange = saveDeadlineSettings;
+        groupSelect.onchange = saveDeadlineSettings;
+        
         // Deadline status display
         const deadlineStatus = document.createElement("div");
         deadlineStatus.id = "deadline-status";
-        deadlineStatus.style.cssText = "font-size: 12px; color: #888; padding: 8px; background: #2a2a2a; border-radius: 4px;";
-        deadlineStatus.textContent = "Click to load Deadline status...";
+        deadlineStatus.style.cssText = "font-size: 12px; color: #888; padding: 8px; background: #2a2a2a; border-radius: 4px; margin-bottom: 8px;";
+        deadlineStatus.textContent = "Ready to claim workers...";
         
         // Deadline action buttons
         const deadlineActions = document.createElement("div");
@@ -323,7 +505,10 @@ export async function renderSidebarContent(extension, el) {
         const claimWorkersBtn = document.createElement("button");
         claimWorkersBtn.textContent = "Claim Workers";
         claimWorkersBtn.style.cssText = `${BUTTON_STYLES.secondary}; font-size: 12px; padding: 6px 12px; background: #ff6b35; border-color: #ff6b35;`;
-        claimWorkersBtn.onclick = () => extension.claimDeadlineWorkers();
+        claimWorkersBtn.onclick = () => {
+            const count = parseInt(document.getElementById('deadline-worker-count').value) || 4;
+            extension.claimDeadlineWorkers(count);
+        };
         
         // Release workers button
         const releaseWorkersBtn = document.createElement("button");
@@ -334,6 +519,11 @@ export async function renderSidebarContent(extension, el) {
         deadlineActions.appendChild(claimWorkersBtn);
         deadlineActions.appendChild(releaseWorkersBtn);
         
+        deadlineDiv.appendChild(workerCountContainer);
+        deadlineDiv.appendChild(priorityContainer);
+        deadlineDiv.appendChild(poolContainer);
+        deadlineDiv.appendChild(groupContainer);
+        deadlineDiv.appendChild(refreshContainer);
         deadlineDiv.appendChild(deadlineStatus);
         deadlineDiv.appendChild(deadlineActions);
         deadlineContent.appendChild(deadlineDiv);

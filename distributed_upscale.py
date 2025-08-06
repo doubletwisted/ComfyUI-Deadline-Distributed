@@ -695,9 +695,10 @@ class UltimateSDUpscaleDistributed:
         This follows the exact method from ComfyUI_UltimateSDUpscale/modules/processing.py
         """
         extracted_width, extracted_height = extracted_size
-        
+
         # Debug logging (uncomment if needed)
         # debug_log(f"[Blend] Placing tile at ({x}, {y}), size: {extracted_width}x{extracted_height}")
+
         
         # Calculate the crop region that was used for extraction
         crop_region = (x, y, x + extracted_width, y + extracted_height)
@@ -2199,9 +2200,9 @@ ensure_tile_jobs_initialized()
 
 # Node registration
 NODE_CLASS_MAPPINGS = {
-    "UltimateSDUpscaleDistributed": UltimateSDUpscaleDistributed,
+    "DeadlineUltimateSDUpscaleDistributed": UltimateSDUpscaleDistributed,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "UltimateSDUpscaleDistributed": "Ultimate SD Upscale Distributed (No Upscale)",
+    "DeadlineUltimateSDUpscaleDistributed": "Deadline Ultimate SD Upscale Distributed (No Upscale)",
 }

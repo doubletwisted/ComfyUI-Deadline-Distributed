@@ -171,6 +171,38 @@ class DistributedExtension {
             });
         }
     }
+    
+    async updateDeadlineSettings(priority, pool, group) {
+        try {
+            // Update local config immediately for better UX
+            if (!this.config.deadline) {
+                this.config.deadline = {};
+            }
+            this.config.deadline.priority = priority;
+            this.config.deadline.pool = pool;
+            this.config.deadline.group = group;
+            
+            // Persist to backend
+            await this.api.updateDeadline({ priority, pool, group });
+            this.log(`Updated deadline settings: Priority=${priority}, Pool=${pool}, Group=${group}`, "info");
+            
+            app.extensionManager.toast.add({
+                severity: "success",
+                summary: "Deadline Settings Updated",
+                detail: `Priority: ${priority}, Pool: ${pool}, Group: ${group}`,
+                life: 2000
+            });
+        } catch (error) {
+            this.log(`Error updating deadline settings: ${error.message}`, "error");
+            
+            app.extensionManager.toast.add({
+                severity: "error",
+                summary: "Update Failed",
+                detail: `Failed to update deadline settings: ${error.message}`,
+                life: 3000
+            });
+        }
+    }
 
     // --- UI Rendering ---
 
@@ -255,6 +287,11 @@ class DistributedExtension {
         // Create new abort controller for this round of checks
         this.statusCheckAbortController = new AbortController();
         
+        // Periodically reload config to pick up new Deadline workers (every 10 seconds)
+        if (!this.lastConfigReload || Date.now() - this.lastConfigReload > 5000) {
+            await this.loadConfig();
+            this.lastConfigReload = Date.now();
+        }
         
         // Check master status
         this.checkMasterStatus();
@@ -1341,12 +1378,28 @@ class DistributedExtension {
             const status = await response.json();
 
             if (status.available) {
-                statusElement.innerHTML = `
-                    <div>📊 Available: ${status.available_workers} workers</div>
-                    <div>🎯 Claimed: ${status.claimed_workers} workers</div>
-                    <div>📈 Total: ${status.total_workers} workers</div>
-                `;
+                const activeWorkersCount = status.active_workers ? status.active_workers.length : 0;
+                const activeJobsCount = status.active_jobs || 0;
+                
+                let statusHTML = `<div style="color: #4CAF50;">✅ Deadline available</div>`;
+                
+                if (activeWorkersCount > 0) {
+                    statusHTML += `<div>🎯 Active Workers: ${activeWorkersCount}</div>`;
+                }
+                
+                if (activeJobsCount > 0) {
+                    statusHTML += `<div>📋 Running Jobs: ${activeJobsCount}</div>`;
+                } else {
+                    statusHTML += `<div style="color: #888;">No workers claimed yet</div>`;
+                }
+                
+                statusElement.innerHTML = statusHTML;
                 statusElement.style.color = "#4CAF50";
+                
+                // Update active workers list if available
+                if (status.active_workers && status.active_workers.length > 0) {
+                    this.updateActiveWorkersList(status.active_workers);
+                }
             } else {
                 statusElement.innerHTML = `
                     <div style="color: #ff6b6b;">❌ Deadline not available</div>
@@ -1363,17 +1416,33 @@ class DistributedExtension {
         }
     }
 
-    async claimDeadlineWorkers() {
+    async claimDeadlineWorkers(count = 4) {
         try {
             // Get master WS address from distributed config
-            const masterWS = this.config?.master?.ws_address || 'localhost:8188';
+            // Try to use the recommended IP from network detection, fallback to localhost
+            const recommendedIP = this.config?.master?.host || 'localhost';
+            const masterPort = this.config?.master?.port || '8188';
+            const masterWS = `${recommendedIP}:${masterPort}`;
+            
+            this.log(`🎯 Claiming ${count} workers with master at ${masterWS}`, 'info');
+            
+            // Get deadline settings from config
+            const deadlineSettings = this.config?.deadline || {};
+            const priority = deadlineSettings.priority || 50;
+            const pool = deadlineSettings.pool || "none";
+            const group = deadlineSettings.group || "none";
+            
+            this.log(`📋 Using deadline settings: Priority=${priority}, Pool=${pool}, Group=${group}`, 'info');
             
             const response = await fetch('/deadline/claim_workers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    count: 2, // Default to 2 workers
-                    master_ws: masterWS
+                    count: count,
+                    master_ws: masterWS,
+                    priority: priority,
+                    pool: pool,
+                    group: group
                 })
             });
 
@@ -1411,6 +1480,38 @@ class DistributedExtension {
         } catch (error) {
             this.log(`❌ Error releasing workers: ${error.message}`, 'error');
         }
+    }
+
+    updateActiveWorkersList(workers) {
+        // Find or create workers list container in the deadline section
+        let workersList = document.getElementById('deadline-workers-list');
+        if (!workersList) {
+            // Create workers list container
+            const deadlineSection = document.querySelector('#deadline-status').parentElement;
+            workersList = document.createElement('div');
+            workersList.id = 'deadline-workers-list';
+            workersList.style.cssText = 'margin-top: 8px; font-size: 11px;';
+            deadlineSection.appendChild(workersList);
+        }
+
+        if (workers.length === 0) {
+            workersList.innerHTML = '<div style="color: #888; font-style: italic;">No active workers</div>';
+            return;
+        }
+
+        // Create workers list
+        const workersHTML = workers.map(worker => `
+            <div style="padding: 4px; margin: 2px 0; background: #333; border-radius: 3px; border-left: 3px solid #ff6b35;">
+                <div style="font-weight: bold; color: #ff6b35;">🖥️ ${worker.id}</div>
+                <div style="color: #aaa;">📍 ${worker.ip}:${worker.port}</div>
+                ${worker.job_id ? `<div style="color: #888; font-size: 10px;">Job: ${worker.job_id}</div>` : ''}
+            </div>
+        `).join('');
+
+        workersList.innerHTML = `
+            <div style="font-weight: bold; margin-bottom: 4px; color: #ff6b35;">Active Deadline Workers:</div>
+            ${workersHTML}
+        `;
     }
 }
 

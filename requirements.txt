@@ -1,0 +1,8 @@
+# ComfyUI-Deadline-Distributed Requirements
+
+# Required: ComfyUI-Deadline-Plugin for basic Deadline submission functionality
+# This provides the DeadlineSubmit node and core Deadline integration
+git+https://github.com/doubletwisted/ComfyUI-Deadline-Plugin.git
+
+# Note: This should be installed via ComfyUI Manager when available
+# Manual installation: Clone to ComfyUI/custom_nodes/ directory

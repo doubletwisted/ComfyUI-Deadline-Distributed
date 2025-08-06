@@ -9,7 +9,6 @@ try:
     import execution
     from .distributed import ImageBatchDivider
     
-    # Store original validate function if it exists
     if hasattr(execution, 'validate_outputs'):
         original_validate_outputs = execution.validate_outputs
         
@@ -19,17 +18,6 @@ try:
             return original_validate_outputs(executor, node_id, result, node_class)
         
         execution.validate_outputs = patched_validate_outputs
-    else:
-        # Fallback: patch the main execute method if validate_outputs doesn't exist
-        if hasattr(execution.PromptExecutor, 'execute'):
-            original_execute = execution.PromptExecutor.execute
-            
-            def patched_execute(self, prompt, prompt_id, extra_data={}, execute_outputs=[]):
-                # This is a more complex patch - for now just call original
-                # The ByPassTypeTuple should handle most validation issues
-                return original_execute(self, prompt, prompt_id, extra_data, execute_outputs)
-            
-            execution.PromptExecutor.execute = patched_execute
             
 except ImportError:
     pass  # ComfyUI execution module not available during import
@@ -40,29 +28,54 @@ from .distributed import (
     NODE_DISPLAY_NAME_MAPPINGS as DISTRIBUTED_DISPLAY_NAME_MAPPINGS
 )
 
-# Import utilities
-from .utils.config import ensure_config_exists, CONFIG_FILE
-from .utils.logging import debug_log
-
 # Import distributed upscale nodes
 from .distributed_upscale import (
     NODE_CLASS_MAPPINGS as UPSCALE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS as UPSCALE_DISPLAY_NAME_MAPPINGS
 )
 
-# Import Deadline integration nodes
-from .deadline_submit import (
-    NODE_CLASS_MAPPINGS as DEADLINE_SUBMIT_CLASS_MAPPINGS,
-    NODE_DISPLAY_NAME_MAPPINGS as DEADLINE_SUBMIT_DISPLAY_NAME_MAPPINGS
+# Import Deadline integration nodes from ComfyUI-Deadline-Plugin
+try:
+    # Try different possible import paths for ComfyUI-Deadline-Plugin
+    try:
+        from ComfyUI_Deadline_Plugin.deadline_submit import (
+            NODE_CLASS_MAPPINGS as SUBMIT_CLASS_MAPPINGS,
+            NODE_DISPLAY_NAME_MAPPINGS as SUBMIT_DISPLAY_NAME_MAPPINGS
+        )
+    except ImportError:
+        # Alternative import path if installed differently
+        import sys
+        import os
+        deadline_plugin_path = os.path.join(os.path.dirname(__file__), '..', 'ComfyUI-Deadline-Plugin')
+        if os.path.exists(deadline_plugin_path):
+            sys.path.insert(0, deadline_plugin_path)
+            from deadline_submit import (
+                NODE_CLASS_MAPPINGS as SUBMIT_CLASS_MAPPINGS,
+                NODE_DISPLAY_NAME_MAPPINGS as SUBMIT_DISPLAY_NAME_MAPPINGS
+            )
+        else:
+            raise ImportError("ComfyUI-Deadline-Plugin not found")
+except ImportError:
+    # Fallback if ComfyUI-Deadline-Plugin is not available
+    print("Warning: ComfyUI-Deadline-Plugin not found. Please install it from:")
+    print("  https://github.com/doubletwisted/ComfyUI-Deadline-Plugin")
+    print("DeadlineSubmit node will not be available.")
+    SUBMIT_CLASS_MAPPINGS = {}
+    SUBMIT_DISPLAY_NAME_MAPPINGS = {}
+
+# deadline_seed_node.py removed - DeadlineDistributedSeed is now an alias in distributed.py
+
+from .deadline_worker_registration import (
+    NODE_CLASS_MAPPINGS as WORKER_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as WORKER_DISPLAY_NAME_MAPPINGS
 )
 
-from .deadline_seed_node import (
-    NODE_CLASS_MAPPINGS as DEADLINE_SEED_CLASS_MAPPINGS,
-    NODE_DISPLAY_NAME_MAPPINGS as DEADLINE_SEED_DISPLAY_NAME_MAPPINGS
-)
+# Import utilities
+from .utils.config import ensure_config_exists, CONFIG_FILE
+from .utils.logging import debug_log
 
 # Initialize Deadline integration API endpoints
-from . import deadline_integration
+from . import deadline_integration_simple as deadline_integration
 
 WEB_DIRECTORY = "./web"
 
@@ -72,19 +85,20 @@ ensure_config_exists()
 NODE_CLASS_MAPPINGS = {
     **DISTRIBUTED_CLASS_MAPPINGS, 
     **UPSCALE_CLASS_MAPPINGS,
-    **DEADLINE_SUBMIT_CLASS_MAPPINGS,
-    **DEADLINE_SEED_CLASS_MAPPINGS
+    **SUBMIT_CLASS_MAPPINGS,
+    **WORKER_CLASS_MAPPINGS
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     **DISTRIBUTED_DISPLAY_NAME_MAPPINGS, 
     **UPSCALE_DISPLAY_NAME_MAPPINGS,
-    **DEADLINE_SUBMIT_DISPLAY_NAME_MAPPINGS,
-    **DEADLINE_SEED_DISPLAY_NAME_MAPPINGS
+    **SUBMIT_DISPLAY_NAME_MAPPINGS,
+    **WORKER_DISPLAY_NAME_MAPPINGS
 }
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
-debug_log("Loaded Distributed + Deadline nodes.")
+debug_log(f"ComfyUI-Deadline-Distributed loaded: {len(NODE_CLASS_MAPPINGS)} nodes available")
+debug_log("Loaded Distributed nodes.")
 debug_log(f"Config file: {CONFIG_FILE}")
 debug_log(f"Available nodes: {list(NODE_CLASS_MAPPINGS.keys())}")

@@ -64,6 +64,25 @@ export function createApiClient(baseUrl) {
             });
         },
         
+        async updateDeadline(data) {
+            return request('/distributed/config/update_deadline', {
+                method: 'POST',
+                body: JSON.stringify(data)
+            });
+        },
+        
+        async getDeadlinePools() {
+            return request('/distributed/deadline/pools', {
+                method: 'GET'
+            });
+        },
+        
+        async getDeadlineGroups() {
+            return request('/distributed/deadline/groups', {
+                method: 'GET'
+            });
+        },
+        
         // Worker management endpoints
         async launchWorker(workerId) {
             return request('/distributed/launch_worker', {

@@ -3,7 +3,14 @@ Configuration management for ComfyUI-Distributed.
 """
 import os
 import json
-from .logging import log
+
+# Handle logging import gracefully
+try:
+    from .logging import log
+except ImportError:
+    # Fallback if relative import fails
+    def log(message):
+        print(f"[Config] {message}")
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gpu_config.json")
 
@@ -16,6 +23,11 @@ def get_default_config():
             "debug": False,
             "auto_launch_workers": False,
             "stop_workers_on_master_exit": True
+        },
+        "deadline": {
+            "priority": 50,
+            "pool": "none",
+            "group": "none"
         }
     }
 
