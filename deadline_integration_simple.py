@@ -212,9 +212,6 @@ class DeadlineIntegration:
             # CRITICAL: Also add worker to ComfyUI-Distributed configuration
             self._add_worker_to_distributed_config(worker_id, worker_ip, worker_port, deadline_worker_name)
             
-            # Automatically clean up duplicates and stale workers
-            self._cleanup_duplicates_automatically()
-            
             return {"success": True, "message": f"Worker {worker_id} registered and added to distributed config"}
         except Exception as e:
             debug_log(f"Error registering worker: {e}")
@@ -250,26 +247,13 @@ class DeadlineIntegration:
             return {"success": False, "error": str(e)}
 
     def get_active_workers(self) -> List[Dict[str, Any]]:
-        """Get list of active workers and clean up stale ones"""
+        """Get list of active workers. Does not mutate persisted config or runtime registry."""
         current_time = time.time()
         active_workers = []
-        stale_workers = []
         
         for worker_id, worker_info in list(self.claimed_workers.items()):
             if current_time - worker_info["last_seen"] < self.worker_heartbeat_timeout:
                 active_workers.append(worker_info)
-            else:
-                # Mark for removal
-                stale_workers.append(worker_id)
-        
-        # Remove stale workers and their distributed config entries
-        for worker_id in stale_workers:
-            del self.claimed_workers[worker_id]
-            self._remove_worker_from_distributed_config(worker_id)
-            debug_log(f"🗑️ Removed stale worker: {worker_id}")
-        
-        # Run automatic cleanup periodically when checking status
-        self._cleanup_duplicates_automatically()
         
         return active_workers
 
@@ -330,74 +314,8 @@ class DeadlineIntegration:
             return {"success": False, "error": str(e)}
 
     def _cleanup_duplicates_automatically(self):
-        """Internal method to automatically clean up duplicates during registration"""
-        try:
-            # This is called automatically during worker registration
-            # It's more targeted than the full cleanup - just removes obvious duplicates
-            
-            # Try to import config module
-            try:
-                import importlib.util
-                import os
-                current_dir = os.path.dirname(__file__)
-                config_path = os.path.join(current_dir, 'utils', 'config.py')
-                
-                spec = importlib.util.spec_from_file_location("utils.config", config_path)
-                config_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(config_module)
-                
-                load_config = config_module.load_config
-                save_config = config_module.save_config
-            except Exception:
-                from .utils.config import load_config, save_config
-            
-            config = load_config()
-            if 'workers' not in config:
-                return
-            
-            # Quick duplicate removal - keep most recent by host+port for deadline workers
-            current_time = time.time()
-            stale_threshold = 300  # 5 minutes
-            
-            seen_combinations = {}
-            workers_to_keep = []
-            
-            for worker in config['workers']:
-                if worker.get('source') != 'deadline':
-                    workers_to_keep.append(worker)
-                    continue
-                
-                # Check if worker is stale
-                last_registered = worker.get('last_registered', 0)
-                if current_time - last_registered > stale_threshold:
-                    debug_log(f"🗑️ Auto-removing stale worker: {worker.get('id')}")
-                    continue
-                
-                host_port = f"{worker.get('host')}:{worker.get('port')}"
-                
-                if host_port in seen_combinations:
-                    existing_worker = seen_combinations[host_port]
-                    existing_time = existing_worker.get('last_registered', 0)
-                    
-                    if last_registered > existing_time:
-                        # Replace with newer worker
-                        workers_to_keep = [w for w in workers_to_keep if w.get('id') != existing_worker.get('id')]
-                        seen_combinations[host_port] = worker
-                        workers_to_keep.append(worker)
-                        debug_log(f"🗑️ Auto-replaced older duplicate: {existing_worker.get('id')} with {worker.get('id')}")
-                    # else: skip current worker as it's older
-                else:
-                    seen_combinations[host_port] = worker
-                    workers_to_keep.append(worker)
-            
-            # Save if there were changes
-            if len(workers_to_keep) != len(config['workers']):
-                config['workers'] = workers_to_keep
-                save_config(config)
-                
-        except Exception as e:
-            debug_log(f"Error in automatic cleanup: {e}")
-            # Don't fail registration if cleanup fails
+        """No-op: automatic destructive cleanup disabled as per requirements."""
+        return
 
     def _extract_hostname_from_worker_id(self, worker_id: str) -> str:
         """Extract hostname from worker ID (format: deadline-HOSTNAME-job-task-port)"""
@@ -499,22 +417,7 @@ class DeadlineIntegration:
                 config['workers'].append(worker_config)
                 debug_log(f"✅ Added new worker {worker_id} to distributed config")
             
-            # Clean up old deadline workers that haven't been seen recently
-            current_time = time.time()
-            stale_threshold = 300  # 5 minutes
-            workers_to_remove = []
-            
-            for i, worker in enumerate(config['workers']):
-                if (worker.get('source') == 'deadline' and 
-                    worker.get('id') != worker_id):  # Don't remove the worker we just added
-                    last_seen = worker.get('last_registered', 0)
-                    if current_time - last_seen > stale_threshold:
-                        workers_to_remove.append(i)
-            
-            # Remove stale workers
-            for idx in sorted(workers_to_remove, reverse=True):
-                stale_worker = config['workers'].pop(idx)
-                debug_log(f"🗑️ Removed stale deadline worker: {stale_worker.get('id')}")
+            # Do not automatically remove stale workers from persisted config
             
             # Save config
             save_config(config)
