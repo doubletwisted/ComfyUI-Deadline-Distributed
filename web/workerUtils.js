@@ -105,13 +105,15 @@ export function findImageReferences(extension, apiPrompt) {
             if (typeof mediaValue === 'string') {
                 // Clean special suffixes like [input] or [output]
                 const cleanValue = mediaValue.replace(/\s*\[\w+\]$/, '').trim();
-                if (imageExtensions.test(cleanValue)) {
-                    images.set(cleanValue, {
+                // Normalize to forward slashes so subfolder/filename can be derived reliably
+                const normalizedValue = cleanValue.replace(/\\/g, '/');
+                if (imageExtensions.test(normalizedValue)) {
+                    images.set(normalizedValue, {
                         nodeId,
                         nodeType: node.class_type,
                         inputName: 'image'  // Keep as 'image' for compatibility
                     });
-                    extension.log(`Found media reference: ${cleanValue} in node ${nodeId} (${node.class_type})`, "debug");
+                    extension.log(`Found media reference: ${normalizedValue} in node ${nodeId} (${node.class_type})`, "debug");
                 }
             }
         }

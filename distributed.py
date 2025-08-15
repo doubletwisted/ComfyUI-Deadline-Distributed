@@ -1652,7 +1652,7 @@ async def load_image_endpoint(request):
         
         # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(image_path)
-        
+
         if not os.path.exists(full_path):
             return await handle_api_error(request, f"File not found: {image_path}", 404)
         
@@ -1733,12 +1733,14 @@ async def check_file_endpoint(request):
         
         # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(filename)
-        
+
         if not os.path.exists(full_path):
             return web.json_response({
                 "status": "success",
                 "exists": False
             })
+
+        # If it exists, we'll report exists below; otherwise instruct caller to upload
         
         # Calculate file hash
         hash_md5 = hashlib.md5()
