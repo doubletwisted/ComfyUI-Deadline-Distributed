@@ -1646,6 +1646,10 @@ async def load_image_endpoint(request):
         import io
         import hashlib
         
+        # Normalize path separators to match ComfyUI's annotated file expectations
+        if isinstance(image_path, str):
+            image_path = image_path.replace('\\', '/')
+        
         # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(image_path)
         
@@ -1722,6 +1726,10 @@ async def check_file_endpoint(request):
         
         import folder_paths
         import hashlib
+        
+        # Normalize path separators for annotated lookup
+        if isinstance(filename, str):
+            filename = filename.replace('\\', '/')
         
         # Use ComfyUI's folder paths to find the file
         full_path = folder_paths.get_annotated_filepath(filename)

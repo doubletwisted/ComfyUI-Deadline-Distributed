@@ -24,8 +24,18 @@ function convertPathsForPlatform(apiPrompt, targetSeparator) {
         if (typeof obj === 'string') {
             // Only convert strings that look like file paths
             if ((obj.includes('\\') || obj.includes('/')) && isLikelyFilename(obj)) {
-                // Replace any path separator with the target one
-                return obj.replace(/[\\\/]/g, targetSeparator);
+                const trimmed = obj.trim();
+                const hasDrive = /^[A-Za-z]:\\\\|^[A-Za-z]:\//.test(trimmed);
+                const isAbsolute = trimmed.startsWith('/') || trimmed.startsWith('\\\\');
+                const hasProtocol = /^\w+:\/\//.test(trimmed);
+
+                // For ComfyUI annotated relative paths (e.g., "pasted/image.png"),
+                // always use forward slashes regardless of platform.
+                if (!hasDrive && !isAbsolute && !hasProtocol) {
+                    return trimmed.replace(/[\\\\]/g, '/');
+                }
+                // Otherwise replace any path separator with the target one
+                return trimmed.replace(/[\\\/]/g, targetSeparator);
             }
             return obj;
         } else if (Array.isArray(obj)) {
@@ -436,10 +446,12 @@ export async function loadImagesForWorker(extension, imageReferences) {
     
     for (const [filename, info] of imageReferences) {
         try {
+            // Normalize path to forward slashes for consistent server lookup
+            const normalizedFilename = typeof filename === 'string' ? filename.replace(/\\\\/g, '/') : filename;
             // Check cache first
-            if (extension._imageCache.has(filename)) {
-                images.push(extension._imageCache.get(filename));
-                extension.log(`Using cached image: ${filename}`, "debug");
+            if (extension._imageCache.has(normalizedFilename)) {
+                images.push(extension._imageCache.get(normalizedFilename));
+                extension.log(`Using cached image: ${normalizedFilename}`, "debug");
                 continue;
             }
             
@@ -452,19 +464,19 @@ export async function loadImagesForWorker(extension, imageReferences) {
             
             // Load image from master's filesystem via API
             try {
-                const data = await extension.api.loadImage(filename);
+                const data = await extension.api.loadImage(normalizedFilename);
                 const imageData = {
-                    name: filename,
+                    name: normalizedFilename,
                     image: data.image_data,
                     hash: data.hash  // Include hash from the response
                 };
                 images.push(imageData);
                 
                 // Cache the image for future use
-                extension._imageCache.set(filename, imageData);
-                extension.log(`Loaded and cached image: ${filename}`, "debug");
+                extension._imageCache.set(normalizedFilename, imageData);
+                extension.log(`Loaded and cached image: ${normalizedFilename}`, "debug");
             } catch (loadError) {
-                extension.log(`Failed to load image ${filename}: ${loadError.message}`, "error");
+                extension.log(`Failed to load image ${normalizedFilename}: ${loadError.message}`, "error");
                 throw loadError;
             }
         } catch (error) {
@@ -532,9 +544,9 @@ export async function uploadImagesToWorker(extension, workerUrl, images) {
         let cleanName = imageData.name;
         let subfolder = '';
         
-        // Extract subfolder if present
-        if (cleanName.includes('/')) {
-            const parts = cleanName.split('/');
+        // Extract subfolder if present (handle both slash styles)
+        if (cleanName.includes('/') || cleanName.includes('\\')) {
+            const parts = cleanName.replace(/\\\\/g, '/').split('/');
             subfolder = parts.slice(0, -1).join('/');
             cleanName = parts[parts.length - 1];
         }
