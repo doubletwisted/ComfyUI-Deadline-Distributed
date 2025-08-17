@@ -1,15 +1,51 @@
 [project]
-name = "ComfyUI-Distributed"
-description = "ComfyUI extension that enables multi-GPU processing locally, remotely and in the cloud"
-version = "1.0.6"
-license = {file = "LICENSE"}
-dependencies  = []
+name = "comfyui-deadline-distributed"
+version = "1.0.0"
+description = "Distributed image generation for ComfyUI with Thinkbox Deadline integration (master/worker via render farm)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Dominik Bargiel", email = "dominikbargiel97@gmail.com" }
+]
+keywords = [
+    "comfyui",
+    "deadline",
+    "distributed",
+    "render-farm",
+    "workflow",
+    "plugin"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
+]
+requires-python = ">=3.8"
+
+# Ensure the base Deadline submission plugin is installed first
+dependencies = [
+    "comfyui-deadline-plugin>=1.0.0"
+]
 
 [project.urls]
-Repository = "https://github.com/robertvoy/ComfyUI-Distributed"
-#  Used by Comfy Registry https://comfyregistry.org
+Homepage = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed"
+Repository = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed"
+Issues = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed/issues"
 
+# Comfy Registry metadata
 [tool.comfy]
-PublisherId = "robertvoy"
-DisplayName = "ComfyUI-Distributed"
+PublisherId = "doubletwisted"
+DisplayName = "ComfyUI-Deadline-Distributed"
+Icon = ""
+
+# ComfyUI Manager metadata
+[comfyui]
+PublisherId = "doubletwisted"
+DisplayName = "ComfyUI Deadline Distributed"
 Icon = ""
