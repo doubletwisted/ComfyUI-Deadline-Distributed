@@ -35,17 +35,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed"
-Repository = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed"
-Issues = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed/issues"
 
 # Comfy Registry metadata
 [tool.comfy]
 PublisherId = "doubletwisted"
 DisplayName = "ComfyUI-Deadline-Distributed"
-Icon = ""
-
-# ComfyUI Manager metadata
-[comfyui]
-PublisherId = "doubletwisted"
-DisplayName = "ComfyUI Deadline Distributed"
 Icon = ""
