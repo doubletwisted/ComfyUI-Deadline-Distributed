@@ -35,6 +35,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed"
+Repository = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed"
+Issues = "https://github.com/doubletwisted/ComfyUI-Deadline-Distributed/issues"
 
 # Comfy Registry metadata
 
