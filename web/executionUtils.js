@@ -19,6 +19,9 @@ function convertPathsForPlatform(apiPrompt, targetSeparator) {
     const isLikelyFilename = (value) => {
         return value.match(/\.(ckpt|safetensors|pt|pth|bin|yaml|json|png|jpg|jpeg|webp|gif|bmp|latent|txt|vae|lora|embedding)(\s*\[\w+\])?$/i);
     };
+    const isImageOrVideo = (value) => {
+        return value.match(/\.(png|jpg|jpeg|webp|gif|bmp|mp4|avi|mov|mkv|webm)(\s*\[\w+\])?$/i);
+    };
     
     function convert(obj) {
         if (typeof obj === 'string') {
@@ -29,13 +32,12 @@ function convertPathsForPlatform(apiPrompt, targetSeparator) {
                 const isAbsolute = trimmed.startsWith('/') || trimmed.startsWith('\\\\');
                 const hasProtocol = /^\w+:\/\//.test(trimmed);
 
-                // For ComfyUI annotated relative paths (e.g., "pasted/image.png"),
-                // always use forward slashes regardless of platform.
-                if (!hasDrive && !isAbsolute && !hasProtocol) {
+                // For annotated relative image/video paths, keep forward slashes
+                if (!hasDrive && !isAbsolute && !hasProtocol && isImageOrVideo(trimmed)) {
                     return trimmed.replace(/[\\\\]/g, '/');
                 }
-                // Otherwise replace any path separator with the target one
-                return trimmed.replace(/[\\\/]/g, targetSeparator);
+                // Otherwise replace any path separator with the worker's target separator
+                return trimmed.replace(/[\\\\\/]/g, targetSeparator);
             }
             return obj;
         } else if (Array.isArray(obj)) {
