@@ -1,5 +1,5 @@
 [project]
-name = "comfyui-deadline-distributed"
+name = "Deadline-Distributed"
 version = "1.0.2"
 description = "Distributed image generation for ComfyUI with Thinkbox Deadline integration (master/worker via render farm)"
 readme = "README.md"
