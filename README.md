@@ -4,6 +4,9 @@
 
 > **Note**: This is a specialized fork of the original ComfyUI distributed rendering system, specifically adapted for Deadline render farm integration.
 
+Check out a quick demo showing how ComfyUI can play nice with Deadline. Please check out the video:
+<p align="center"> <a href="https://youtu.be/NFmIvEoEPiU"> <img src="https://img.youtube.com/vi/NFmIvEoEPiU/maxresdefault.jpg" alt="ComfyUI x Deadline: Leverage Your GPUs" /> </a> </p>
+
 ## Dependencies
 
 This plugin requires **[ComfyUI-Deadline-Plugin](https://github.com/doubletwisted/ComfyUI-Deadline-Plugin)** to be installed first for basic Deadline submission functionality.
