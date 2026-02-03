@@ -1000,12 +1000,24 @@ class DistributedExtension {
                 }
             }
             
-            // Check if we already have a master host configured
-            if (this.config?.master?.host) {
-                this.log(`Master host already configured: ${this.config.master.host}`, "debug");
+            // Treat configured host as stale if it doesn't match any local IP or hostname on this machine
+            const configuredHost = (this.config?.master?.host || "").trim().toLowerCase();
+            const localIdentifiers = new Set([
+                ...(data.all_ips || []).map(ip => String(ip).toLowerCase()),
+                (data.hostname || "").toLowerCase(),
+                "localhost",
+                "127.0.0.1"
+            ]);
+            const isLocalHost = configuredHost && localIdentifiers.has(configuredHost);
+
+            if (configuredHost && isLocalHost) {
+                this.log(`Master host already configured and local: ${this.config.master.host}`, "debug");
                 return;
             }
-            
+            if (configuredHost && !isLocalHost) {
+                this.log(`Master host appears stale (not a local IP on this machine): ${this.config.master.host}, will overwrite with detected IP`, "info");
+            }
+
             // For Runpod, use the proxy hostname as master host
             if (isRunpod) {
                 const runpodHost = window.location.hostname;

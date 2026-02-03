@@ -4,7 +4,7 @@ Shared constants for ComfyUI-Distributed.
 import os
 
 # Timeouts (in seconds)
-WORKER_JOB_TIMEOUT = 30.0
+WORKER_JOB_TIMEOUT = 60.0
 TILE_COLLECTION_TIMEOUT = 30.0
 TILE_WAIT_TIMEOUT = 30.0
 PROCESS_TERMINATION_TIMEOUT = 5.0
