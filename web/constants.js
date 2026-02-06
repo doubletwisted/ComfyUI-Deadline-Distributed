@@ -129,7 +129,13 @@ export const UI_STYLES = {
     // Existing styles
     settingsArrow: "font-size: 12px; color: #888; transition: all 0.2s ease; margin-left: auto; padding: 4px;",
     infoBox: "background-color: #333; color: #999; padding: 5px 14px; border-radius: 4px; font-size: 11px; text-align: center; flex: 1; font-weight: 500;",
-    workerSettings: "margin: 0 12px; padding: 0 12px; background: #1e1e1e; border-radius: 4px; border: 1px solid #2a2a2a;"
+    workerSettings: "margin: 0 12px; padding: 0 12px; background: #1e1e1e; border-radius: 4px; border: 1px solid #2a2a2a;",
+
+    // Progress UI
+    progressRow: "display: none; align-items: center; gap: 8px; padding: 0 12px 8px 12px;",
+    progressBarContainer: "flex: 1; height: 6px; background: #333; border: 1px solid #444; border-radius: 4px; overflow: hidden;",
+    progressBarFill: "height: 100%; background: #4a90e2; width: 0%; transition: width 0.2s ease;",
+    progressText: "font-size: 11px; color: #aaa; min-width: 90px; text-align: right;"
 };
 
 export const TIMEOUTS = {

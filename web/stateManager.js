@@ -32,6 +32,14 @@ export function createStateManager() {
         setWorkerExpanded(workerId, expanded) {
             return this.updateWorker(workerId, { expanded });
         },
+
+        setWorkerProgress(workerId, progress) {
+            return this.updateWorker(workerId, { progress });
+        },
+
+        getWorkerProgress(workerId) {
+            return this.getWorker(workerId).progress || { value: 0, max: 0, node: '' };
+        },
         
         isWorkerLaunching(workerId) {
             return this.getWorker(workerId).launching || false;

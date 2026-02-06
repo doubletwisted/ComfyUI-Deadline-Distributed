@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker, getCachedWorkerSystemInfo } from './workerUtils.js';
+import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker, pruneMasterForCollectorOnly, getCachedWorkerSystemInfo } from './workerUtils.js';
 import { TIMEOUTS } from './constants.js';
 
 /**
@@ -201,7 +201,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
     const isMaster = participantId === 'master';
     
     // Find all distributed nodes once (before pruning) - both original and Deadline versions
-    const collectorNodes = [
+    let collectorNodes = [
         ...findNodesByClass(jobApiPrompt, "DistributedCollector"),
         ...findNodesByClass(jobApiPrompt, "DeadlineDistributedCollector")
     ];
@@ -277,6 +277,33 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             extension.log(`Set seed node ${seedNode.id} for worker ${workerIndex}`, "debug");
         }
     }
+
+    // Handle Distributed batch nodes (per-worker batch sizes)
+    const batchNodes = [
+        ...findNodesByClass(jobApiPrompt, "DistributedBatch"),
+        ...findNodesByClass(jobApiPrompt, "DeadlineDistributedBatch")
+    ];
+    for (const batchNode of batchNodes) {
+        const { inputs } = jobApiPrompt[batchNode.id];
+        inputs.is_worker = !isMaster;
+        if (!isMaster) {
+            const workerConfig = extension.config.workers.find(w => w.id === participantId);
+            inputs.worker_batch_size = workerConfig?.batch_size || inputs.default_batch || 1;
+        }
+    }
+    
+    // For master: prune rendering pipeline if rendering is disabled
+    if (isMaster && extension.config?.master?.rendering_enabled === false) {
+        if (collectorNodes.length > 0) {
+            extension.log("Master rendering disabled - pruning rendering pipeline", "info");
+            jobApiPrompt = pruneMasterForCollectorOnly(extension, jobApiPrompt, collectorNodes);
+            // Re-find collector nodes after pruning (they should still exist)
+            collectorNodes = [
+                ...findNodesByClass(jobApiPrompt, "DistributedCollector"),
+                ...findNodesByClass(jobApiPrompt, "DeadlineDistributedCollector")
+            ];
+        }
+    }
     
     // Handle Distributed collector nodes (already found above)
     for (const collector of collectorNodes) {
@@ -307,8 +334,11 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             inputs.is_worker = !isMaster;
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
+                // Set master_rendering_enabled based on config
+                inputs.master_rendering_enabled = extension.config?.master?.rendering_enabled !== false;
             } else {
-                inputs.master_url = extension.getMasterUrl();
+                const workerInfo = extension.config.workers.find(w => w.id === participantId);
+                inputs.master_url = extension.getMasterUrl(workerInfo);
                 // Also make the worker_job_id unique to prevent potential caching issues
                 inputs.worker_job_id = `${uniqueJobId}_worker_${participantId}`;
                 inputs.worker_id = participantId;
@@ -329,7 +359,8 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
         if (isMaster) {
             inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
         } else {
-            inputs.master_url = extension.getMasterUrl();
+            const workerInfo = extension.config.workers.find(w => w.id === participantId);
+            inputs.master_url = extension.getMasterUrl(workerInfo);
             inputs.worker_id = participantId;
             // Workers also need the enabled_worker_ids to calculate tile distribution
             inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
@@ -421,7 +452,7 @@ async function dispatchToWorker(extension, worker, prompt, workflow, imageRefere
     const promptToSend = {
         prompt,
         extra_data: { extra_pnginfo: { workflow } },
-        client_id: api.clientId
+        client_id: extension.getWorkerClientId(worker.id) || api.clientId
     };
     
     extension.log('[Distributed] Prompt data: ' + JSON.stringify(promptToSend), "debug");

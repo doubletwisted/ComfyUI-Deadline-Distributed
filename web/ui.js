@@ -3,11 +3,11 @@ import { BUTTON_STYLES, UI_STYLES, STATUS_COLORS, UI_COLORS, TIMEOUTS } from './
 const cardConfigs = {
     master: {
         checkbox: { 
-            enabled: false, 
+            enabled: true, 
             checked: true, 
-            disabled: true, 
-            opacity: 0.6, 
-            title: "Master node is always enabled" 
+            disabled: false, 
+            opacity: 1.0, 
+            title: "Toggle rendering on master GPU" 
         },
         statusDot: { 
             color: STATUS_COLORS.ONLINE_GREEN,
@@ -487,6 +487,26 @@ export class DistributedUI {
         statusDot.classList.toggle('status-pulsing', pulsing);
     }
 
+    updateWorkerProgress(workerId, progress) {
+        const progressRow = document.getElementById(`progress-${workerId}`);
+        const progressBar = document.getElementById(`progress-bar-${workerId}`);
+        const progressText = document.getElementById(`progress-text-${workerId}`);
+        if (!progressRow || !progressBar || !progressText) return;
+
+        const value = Number(progress?.value) || 0;
+        const max = Number(progress?.max) || 0;
+        if (max > 0) {
+            const percent = Math.min(100, Math.max(0, (value / max) * 100));
+            progressBar.style.width = `${percent.toFixed(1)}%`;
+            progressText.textContent = `Step ${value}/${max} (${Math.round(percent)}%)`;
+            progressRow.style.display = "flex";
+        } else {
+            progressBar.style.width = "0%";
+            progressText.textContent = "";
+            progressRow.style.display = "none";
+        }
+    }
+
     showLogModal(extension, workerId, logData) {
         // Remove any existing modal
         const existingModal = document.getElementById('distributed-log-modal');
@@ -771,6 +791,12 @@ export class DistributedUI {
         const portGroup = this.createFormGroup("Port:", worker.port, `port-${worker.id}`, "number");
         portGroup.group.id = `port-group-${worker.id}`;
         form.appendChild(portGroup.group);
+
+        // Batch size field
+        const batchGroup = this.createFormGroup("Batch Size Multiplier:", worker.batch_size ?? 1, `batch-${worker.id}`, "number");
+        batchGroup.group.id = `batch-group-${worker.id}`;
+        batchGroup.input.title = "Multiplies the batch_size from DistributedBatch node (e.g., 2 = double the base batch)";
+        form.appendChild(batchGroup.group);
         
         // CUDA Device field (only for local workers)
         const cudaGroup = this.createFormGroup("CUDA Device:", worker.cuda_device || 0, `cuda-${worker.id}`, "number");
@@ -861,21 +887,43 @@ export class DistributedUI {
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
             checkbox.id = `gpu-${data?.id || 'master'}`;
-            checkbox.checked = config?.checked !== undefined ? config.checked : data?.enabled;
+            
+            // Determine checked state: for master, use rendering_enabled from config
+            if (data?.id) {
+                // Worker checkbox
+                checkbox.checked = config?.checked !== undefined ? config.checked : data?.enabled;
+            } else {
+                // Master checkbox - use rendering_enabled from config
+                const renderingEnabled = extension?.config?.master?.rendering_enabled !== false; // default true
+                checkbox.checked = renderingEnabled;
+            }
+            
             checkbox.disabled = config?.disabled || false;
             checkbox.style.cssText = `cursor: ${config?.disabled ? 'default' : 'pointer'}; width: 16px; height: 16px;`;
             
             if (config?.opacity) checkbox.style.opacity = config.opacity;
             if (config?.title) column.title = config.title;
             
-            if (config?.enabled && !config?.disabled && data?.id) {
-                checkbox.style.pointerEvents = "none";
-                column.style.cursor = "pointer";
-                column.onclick = async () => {
-                    checkbox.checked = !checkbox.checked;
-                    await extension.updateWorkerEnabled(data.id, checkbox.checked);
-                    extension.updateSummary();
-                };
+            if (config?.enabled && !config?.disabled) {
+                if (data?.id) {
+                    // Worker checkbox
+                    checkbox.style.pointerEvents = "none";
+                    column.style.cursor = "pointer";
+                    column.onclick = async () => {
+                        checkbox.checked = !checkbox.checked;
+                        await extension.updateWorkerEnabled(data.id, checkbox.checked);
+                        extension.updateSummary();
+                    };
+                } else {
+                    // Master checkbox
+                    checkbox.style.pointerEvents = "none";
+                    column.style.cursor = "pointer";
+                    column.onclick = async () => {
+                        checkbox.checked = !checkbox.checked;
+                        await extension.updateMasterEnabled(checkbox.checked);
+                        extension.updateSummary();
+                    };
+                }
             }
             
             column.appendChild(checkbox);
@@ -1029,19 +1077,31 @@ export class DistributedUI {
         
         const hostResult = this.createFormGroup("Host:", extension.config?.master?.host || "", "master-host", "text", "Auto-detect if empty");
         settingsForm.appendChild(hostResult.group);
+
+        const batchResult = this.createFormGroup(
+            "Batch Size Multiplier:",
+            extension.config?.master?.batch_size ?? 1,
+            "master-batch",
+            "number"
+        );
+        batchResult.input.title = "Multiplies the batch_size from DistributedBatch node (e.g., 2 = double the base batch)";
+        settingsForm.appendChild(batchResult.group);
         
         const saveBtn = this.createButton("Save", async () => {
             const nameInput = document.getElementById('master-name');
             const hostInput = document.getElementById('master-host');
+            const batchInput = document.getElementById('master-batch');
             
             if (!extension.config.master) extension.config.master = {};
             extension.config.master.name = nameInput.value.trim() || "Master";
             
             const hostValue = hostInput.value.trim();
+            const batchValue = parseInt(batchInput.value, 10) || 1;
             
             await extension.api.updateMaster({
                 host: hostValue,
-                name: extension.config.master.name
+                name: extension.config.master.name,
+                batch_size: batchValue
             });
             
             // Reload config to refresh any updated values
@@ -1056,6 +1116,7 @@ export class DistributedUI {
                 // Update the input field with the detected IP
                 document.getElementById('master-host').value = extension.config?.master?.host || "";
             }
+            extension.config.master.batch_size = batchValue;
             
             document.getElementById('master-name-display').textContent = extension.config.master.name;
             this.updateMasterDisplay(extension);
@@ -1081,6 +1142,7 @@ export class DistributedUI {
         const cancelBtn = this.createButton("Cancel", () => {
             document.getElementById('master-name').value = extension.config?.master?.name || "Master";
             document.getElementById('master-host').value = extension.config?.master?.host || "";
+            document.getElementById('master-batch').value = extension.config?.master?.batch_size ?? 1;
         }, "background-color: #555;");
         cancelBtn.style.cssText = BUTTON_STYLES.base + BUTTON_STYLES.cancel;
         
@@ -1199,6 +1261,28 @@ export class DistributedUI {
         }
 
         rightColumn.appendChild(infoRow);
+
+        if (isWorker) {
+            const progressRow = document.createElement("div");
+            progressRow.id = `progress-${data.id}`;
+            progressRow.style.cssText = this.styles.progressRow;
+
+            const progressBarContainer = document.createElement("div");
+            progressBarContainer.style.cssText = this.styles.progressBarContainer;
+
+            const progressBar = document.createElement("div");
+            progressBar.id = `progress-bar-${data.id}`;
+            progressBar.style.cssText = this.styles.progressBarFill;
+
+            const progressText = document.createElement("div");
+            progressText.id = `progress-text-${data.id}`;
+            progressText.style.cssText = this.styles.progressText;
+
+            progressBarContainer.appendChild(progressBar);
+            progressRow.appendChild(progressBarContainer);
+            progressRow.appendChild(progressText);
+            rightColumn.appendChild(progressRow);
+        }
 
         if (config.hover === true) {
             rightColumn.onmouseover = () => {

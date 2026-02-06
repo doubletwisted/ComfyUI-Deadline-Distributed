@@ -75,7 +75,7 @@ export async function renderSidebarContent(extension, el) {
         
         // Main container with adjusted padding
         const container = document.createElement("div");
-        container.style.cssText = "padding: 15px; display: flex; flex-direction: column; height: calc(100% - 32px);";
+        container.style.cssText = "padding: 15px; display: flex; flex-direction: column; height: calc(100% - 32px); overflow-y: auto;";
         
         // Detect master info on panel open (in case CUDA info wasn't available at startup)
         extension.log(`Panel opened. CUDA device count: ${extension.cudaDeviceCount}, Workers: ${extension.config?.workers?.length || 0}`, "debug");
@@ -91,7 +91,7 @@ export async function renderSidebarContent(extension, el) {
         
         // Workers Section (no heading)
         const gpuSection = document.createElement("div");
-        gpuSection.style.cssText = "flex: 1; overflow-y: auto; margin-bottom: 15px;";
+        gpuSection.style.cssText = "margin-bottom: 15px;";
         
         const gpuList = document.createElement("div");
         const workers = extension.config?.workers || [];
@@ -184,10 +184,14 @@ export async function renderSidebarContent(extension, el) {
         
         // Toggle functionality
         let settingsExpanded = false;
+        const updateSettingsHeight = () => {
+            settingsContent.style.maxHeight = `${settingsContent.scrollHeight}px`;
+        };
+
         settingsHeader.onclick = () => {
             settingsExpanded = !settingsExpanded;
             if (settingsExpanded) {
-                settingsContent.style.maxHeight = "200px";
+                updateSettingsHeight();
                 settingsContent.style.opacity = "1";
                 workerSettingsToggle.style.transform = "rotate(90deg)";
             } else {
@@ -254,7 +258,56 @@ export async function renderSidebarContent(extension, el) {
         settingsDiv.appendChild(debugGroup);
         settingsDiv.appendChild(autoLaunchGroup);
         settingsDiv.appendChild(stopOnExitGroup);
+
+        const addNumberSetting = (key, labelText, value, min = 1, step = 1) => {
+            const group = document.createElement("div");
+            group.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
+
+            const label = document.createElement("label");
+            label.textContent = labelText;
+            label.style.cssText = "font-size: 12px; color: #ccc;";
+
+            const input = document.createElement("input");
+            input.type = "number";
+            input.min = String(min);
+            input.step = String(step);
+            input.value = value;
+            input.style.cssText = "padding: 4px 8px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 12px;";
+            input.onchange = (e) => {
+                const parsed = Number(e.target.value);
+                if (!Number.isNaN(parsed)) {
+                    extension._updateSetting(key, parsed);
+                }
+            };
+
+            group.appendChild(label);
+            group.appendChild(input);
+            settingsDiv.appendChild(group);
+        };
+
+        addNumberSetting(
+            'worker_job_timeout',
+            'Worker Job Timeout (s)',
+            extension.config?.settings?.worker_job_timeout ?? 60,
+            1,
+            1
+        );
+        addNumberSetting(
+            'max_batch',
+            'Max Batch Size',
+            extension.config?.settings?.max_batch ?? 20,
+            1,
+            1
+        );
+        addNumberSetting(
+            'heartbeat_timeout',
+            'Heartbeat Timeout (s)',
+            extension.config?.settings?.heartbeat_timeout ?? 60,
+            1,
+            1
+        );
         settingsContent.appendChild(settingsDiv);
+        updateSettingsHeight();
         
         settingsSection.appendChild(settingsHeader);
         settingsSection.appendChild(settingsContent);

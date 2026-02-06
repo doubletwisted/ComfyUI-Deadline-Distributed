@@ -500,6 +500,7 @@ class DeadlineIntegration:
             f.write(f"EnvironmentKeyValue3=COMFY_MASTER_PORT={master_ws.split(':')[1] if ':' in master_ws else '8188'}\n")
             f.write(f"EnvironmentKeyValue4=COMFY_FORCE_NEW_INSTANCE=1\n")
             f.write(f"EnvironmentKeyValue5=COMFY_WORKER_MODE=1\n")
+            f.write(f"EnvironmentKeyValue6=GIT_PYTHON_REFRESH=quiet\n")
         
         # Create a worker registration workflow
         dummy_workflow_file = os.path.join(temp_dir, "worker_registration.json")

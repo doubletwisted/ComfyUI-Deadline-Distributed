@@ -33,6 +33,10 @@ class DistributedExtension {
         // Initialize abort controller for status checks
         this.statusCheckAbortController = null;
 
+        // Track per-worker websocket progress connections
+        this.workerProgressSockets = new Map();
+        this.workerProgressClientIds = new Map();
+
         // Inject CSS for pulsing animation
         this.injectStyles();
 
@@ -115,6 +119,18 @@ class DistributedExtension {
         } catch (error) {
             this.log("Failed to load config: " + error.message, "error");
             this.config = { workers: [], settings: { has_auto_populated_workers: false } };
+        }
+    }
+
+    async updateMasterEnabled(enabled) {
+        try {
+            await this.api.updateMaster({ rendering_enabled: enabled });
+            if (!this.config.master) this.config.master = {};
+            this.config.master.rendering_enabled = enabled;
+            this.log(`Master rendering ${enabled ? 'enabled' : 'disabled'}`, "info");
+        } catch (error) {
+            this.log(`Error updating master rendering enabled: ${error.message || error}`, "error");
+            throw error;
         }
     }
 
@@ -396,6 +412,12 @@ class DistributedExtension {
         return `${protocol}://${finalHost}${portStr}${endpoint}`;
     }
 
+    // Helper to build worker websocket URL
+    getWorkerWsUrl(worker, endpoint = '/ws') {
+        const httpUrl = this.getWorkerUrl(worker, endpoint);
+        return httpUrl.replace(/^http/, 'ws');
+    }
+
     async checkWorkerStatus(worker) {
         // Assume caller ensured enabled; proceed with check
         const url = this.getWorkerUrl(worker, '/prompt');
@@ -437,6 +459,9 @@ class DistributedExtension {
                 } else {
                     this.ui.updateStatusDot(worker.id, "#3ca03c", "Online - Idle", false);
                 }
+
+                // Keep progress websocket alive while worker is online
+                this.connectWorkerProgress(worker);
                 
                 // Clear launching state since worker is now online
                 if (this.state.isWorkerLaunching(worker.id)) {
@@ -469,10 +494,84 @@ class DistributedExtension {
             // If disabled, don't update the dot (leave it gray)
             
             this.log(`Worker ${worker.id} status check failed: ${error.message}`, "debug");
+            this.disconnectWorkerProgress(worker.id);
         }
         
         // Update control buttons based on new status
         this.updateWorkerControls(worker.id);
+    }
+
+    connectWorkerProgress(worker) {
+        const workerId = worker.id;
+        const existing = this.workerProgressSockets.get(workerId);
+        if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+
+        const wsUrl = this.getWorkerWsUrl(worker, '/ws');
+        let socket;
+        try {
+            socket = new WebSocket(wsUrl);
+        } catch (error) {
+            this.log(`Failed to open progress websocket for worker ${workerId}: ${error.message}`, "debug");
+            return;
+        }
+
+        this.workerProgressSockets.set(workerId, socket);
+
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                if (message?.type === 'status' && message.data?.sid) {
+                    this.workerProgressClientIds.set(workerId, message.data.sid);
+                } else if (message?.type === 'progress' && message.data) {
+                    const value = Number(message.data.value) || 0;
+                    const max = Number(message.data.max) || 0;
+                    const progress = { value, max, node: message.data.node || '' };
+                    this.state.setWorkerProgress(workerId, progress);
+                    this.ui.updateWorkerProgress(workerId, progress);
+                } else if (message?.type === 'executing') {
+                    const node = message?.data?.node;
+                if (node === null) {
+                    this.state.setWorkerProgress(workerId, { value: 0, max: 0, node: '' });
+                    this.ui.updateWorkerProgress(workerId, { value: 0, max: 0, node: '' });
+                }
+                }
+            } catch (error) {
+                this.log(`Progress websocket parse error for worker ${workerId}: ${error.message}`, "debug");
+            }
+        };
+
+        socket.onclose = () => {
+            if (this.workerProgressSockets.get(workerId) === socket) {
+                this.workerProgressSockets.delete(workerId);
+            }
+        };
+
+        socket.onerror = () => {
+            if (this.workerProgressSockets.get(workerId) === socket) {
+                this.workerProgressSockets.delete(workerId);
+            }
+        };
+    }
+
+    disconnectWorkerProgress(workerId) {
+        const socket = this.workerProgressSockets.get(workerId);
+        if (socket) {
+            this.workerProgressSockets.delete(workerId);
+            try {
+                socket.close();
+            } catch (_) {
+                // ignore
+            }
+        }
+        this.workerProgressClientIds.delete(workerId);
+        this.state.setWorkerProgress(workerId, { value: 0, max: 0, node: '' });
+        this.ui.updateWorkerProgress(workerId, { value: 0, max: 0, node: '' });
+    }
+
+    getWorkerClientId(workerId) {
+        return this.workerProgressClientIds.get(workerId);
     }
 
     async launchWorker(workerId) {
@@ -843,7 +942,25 @@ class DistributedExtension {
         return worker.type === "cloud";
     }
 
-    getMasterUrl() {
+    getMasterUrl(worker = null) {
+        // If worker is localhost (same machine), use 127.0.0.1 for master
+        if (worker) {
+            const workerHost = worker.host || window.location.hostname;
+            const isLocalWorker = !worker.host || 
+                                  workerHost === 'localhost' || 
+                                  workerHost === '127.0.0.1' ||
+                                  workerHost === window.location.hostname;
+            
+            if (isLocalWorker) {
+                const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+                if ((window.location.protocol === 'https:' && port === '443') || 
+                    (window.location.protocol === 'http:' && port === '80')) {
+                    return `${window.location.protocol}//127.0.0.1`;
+                }
+                return `${window.location.protocol}//127.0.0.1:${port}`;
+            }
+        }
+        
         // Always use the detected/configured master IP for consistency
         if (this.config?.master?.host) {
             const configuredHost = this.config.master.host;
@@ -947,7 +1064,8 @@ class DistributedExtension {
                             port: 8189 + portOffset,
                             cuda_device: i,
                             enabled: true,
-                            extra_args: isRunpod ? "--listen" : ""
+                            extra_args: isRunpod ? "--listen" : "",
+                            batch_size: 1
                         };
                         newWorkers.push(worker);
                         workerNum++;
@@ -1071,6 +1189,7 @@ class DistributedExtension {
         const port = parseInt(document.getElementById(`port-${workerId}`).value);
         const cudaDevice = isRemote ? undefined : parseInt(document.getElementById(`cuda-${workerId}`).value);
         const extraArgs = isRemote ? undefined : document.getElementById(`args-${workerId}`).value;
+        const batchSize = parseInt(document.getElementById(`batch-${workerId}`).value, 10) || 1;
         
         // Validate
         if (!name.trim()) {
@@ -1160,7 +1279,8 @@ class DistributedExtension {
                 host: isRemote ? host.trim() : null,
                 port: port,
                 cuda_device: isRemote ? null : cudaDevice,
-                extra_args: isRemote ? null : (extraArgs ? extraArgs.trim() : "")
+                extra_args: isRemote ? null : (extraArgs ? extraArgs.trim() : ""),
+                batch_size: batchSize
             });
             
             // Update local config
@@ -1176,6 +1296,7 @@ class DistributedExtension {
                 worker.extra_args = extraArgs ? extraArgs.trim() : "";
             }
             worker.port = port;
+            worker.batch_size = batchSize;
             
             // Sync to state
             this.state.updateWorker(workerId, { enabled: worker.enabled });
@@ -1213,6 +1334,7 @@ class DistributedExtension {
             document.getElementById(`port-${workerId}`).value = worker.port;
             document.getElementById(`cuda-${workerId}`).value = worker.cuda_device || 0;
             document.getElementById(`args-${workerId}`).value = worker.extra_args || "";
+            document.getElementById(`batch-${workerId}`).value = worker.batch_size ?? 1;
             
             // Reset remote checkbox
             const remoteCheckbox = document.getElementById(`remote-${workerId}`);
@@ -1279,7 +1401,8 @@ class DistributedExtension {
             port: nextPort,
             cuda_device: this.config.workers.length,
             enabled: true,  // Default to enabled for convenience
-            extra_args: ""
+            extra_args: "",
+            batch_size: 1
         };
         
         // Add to config
@@ -1292,7 +1415,8 @@ class DistributedExtension {
                 port: newWorker.port,
                 cuda_device: newWorker.cuda_device,
                 extra_args: newWorker.extra_args,
-                enabled: newWorker.enabled
+                enabled: newWorker.enabled,
+                batch_size: newWorker.batch_size
             });
             
             // Sync to state

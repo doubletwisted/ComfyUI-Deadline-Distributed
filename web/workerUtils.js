@@ -236,6 +236,121 @@ export function pruneWorkflowForWorker(extension, apiPrompt, distributedNodes = 
 }
 
 /**
+ * Prune master workflow to only include collector and downstream nodes when rendering is disabled.
+ * Replaces collector's images input with a lightweight CPU placeholder.
+ * @param {Object} extension - Extension instance
+ * @param {Object} apiPrompt - The full workflow API prompt
+ * @param {Array} collectorNodes - Array of collector node objects {id, data}
+ * @returns {Object} Pruned API prompt with placeholder + collector + downstream nodes only
+ */
+export function pruneMasterForCollectorOnly(extension, apiPrompt, collectorNodes) {
+    if (collectorNodes.length === 0) {
+        extension.log("No collector nodes found, skipping master pruning", "debug");
+        return apiPrompt;
+    }
+    
+    // Deep clone the prompt to avoid mutating the original
+    const prunedPrompt = JSON.parse(JSON.stringify(apiPrompt));
+    
+    // Generate unique ID for placeholder node (max existing numeric key + 1)
+    const existingIds = Object.keys(prunedPrompt)
+        .filter(k => !isNaN(parseInt(k)))
+        .map(k => parseInt(k));
+    const maxId = existingIds.length > 0 ? Math.max(...existingIds) : 0;
+    const placeholderId = String(maxId + 1);
+    
+    // Inject DistributedPlaceholder node
+    prunedPrompt[placeholderId] = {
+        class_type: "DistributedPlaceholder",
+        inputs: {},
+        _meta: {
+            title: "Placeholder (master rendering disabled)"
+        }
+    };
+    
+    extension.log(`Injected DistributedPlaceholder node ${placeholderId}`, "debug");
+    
+    // Rewire each collector's images input to the placeholder
+    const collectorIds = collectorNodes.map(n => n.id);
+    for (const collectorId of collectorIds) {
+        if (prunedPrompt[collectorId] && prunedPrompt[collectorId].inputs) {
+            prunedPrompt[collectorId].inputs.images = [placeholderId, 0];
+            extension.log(`Rewired collector ${collectorId} to use placeholder ${placeholderId}`, "debug");
+        }
+    }
+    
+    // Find all terminal nodes (nodes whose output is not referenced by any other node)
+    const referencedNodes = new Set();
+    for (const [nodeId, node] of Object.entries(prunedPrompt)) {
+        if (node.inputs) {
+            for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+                if (Array.isArray(inputValue) && inputValue.length === 2) {
+                    const sourceNodeId = String(inputValue[0]);
+                    referencedNodes.add(sourceNodeId);
+                }
+            }
+        }
+    }
+    
+    // Terminal nodes are those not referenced by any other node
+    // Also include nodes that are OUTPUT_NODE types (SaveImage, PreviewImage, etc.)
+    const terminalNodes = [];
+    for (const nodeId of Object.keys(prunedPrompt)) {
+        if (!referencedNodes.has(nodeId)) {
+            terminalNodes.push(nodeId);
+        }
+        // Also check for common output node types
+        const node = prunedPrompt[nodeId];
+        if (node && (
+            node.class_type === "SaveImage" ||
+            node.class_type === "PreviewImage" ||
+            node.class_type === "SaveAnimatedWEBP" ||
+            node.class_type === "SaveAnimatedPNG" ||
+            node.class_type === "SaveAnimatedGIF"
+        )) {
+            if (!terminalNodes.includes(nodeId)) {
+                terminalNodes.push(nodeId);
+            }
+        }
+    }
+    
+    // BFS backwards from terminal nodes to find all reachable nodes
+    const reachable = new Set([placeholderId]); // Always include placeholder
+    const toProcess = [...terminalNodes];
+    
+    while (toProcess.length > 0) {
+        const nodeId = toProcess.pop();
+        if (reachable.has(nodeId)) continue;
+        
+        reachable.add(nodeId);
+        const node = prunedPrompt[nodeId];
+        
+        if (node && node.inputs) {
+            // Traverse backwards through inputs
+            for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+                if (Array.isArray(inputValue) && inputValue.length === 2) {
+                    const sourceNodeId = String(inputValue[0]);
+                    if (!reachable.has(sourceNodeId)) {
+                        toProcess.push(sourceNodeId);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Remove unreachable nodes
+    const originalCount = Object.keys(prunedPrompt).length;
+    const prunedResult = {};
+    for (const nodeId of reachable) {
+        prunedResult[nodeId] = prunedPrompt[nodeId];
+    }
+    
+    extension.log(`Pruned master workflow: keeping ${Object.keys(prunedResult).length} of ${originalCount} nodes (removed rendering pipeline)`, "debug");
+    
+    return prunedResult;
+}
+
+/**
  * Check if a node has an upstream node of a specific type
  * @param {Object} apiPrompt - The workflow API prompt
  * @param {string} nodeId - The node to check

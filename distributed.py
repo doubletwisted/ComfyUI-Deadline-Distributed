@@ -30,7 +30,8 @@ from .utils.async_helpers import run_async_in_server_loop
 from .utils.constants import (
     WORKER_JOB_TIMEOUT, PROCESS_TERMINATION_TIMEOUT, WORKER_CHECK_INTERVAL, 
     STATUS_CHECK_INTERVAL, CHUNK_SIZE, LOG_TAIL_BYTES, WORKER_LOG_PATTERN, 
-    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY, MAX_BATCH
+    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY, MAX_BATCH,
+    reload_constants
 )
 
 # Try to import psutil for better process management
@@ -329,6 +330,10 @@ async def update_worker_endpoint(request):
                         worker.pop("extra_args", None)
                     else:
                         worker["extra_args"] = data["extra_args"]
+
+                # Handle batch_size field
+                if "batch_size" in data:
+                    worker["batch_size"] = data["batch_size"]
                         
                 # Handle type field
                 if "type" in data:
@@ -348,7 +353,8 @@ async def update_worker_endpoint(request):
                     "cuda_device": data["cuda_device"],
                     "enabled": data.get("enabled", False),
                     "extra_args": data.get("extra_args", ""),
-                    "type": data.get("type", "local")
+                    "type": data.get("type", "local"),
+                    "batch_size": data.get("batch_size", 1)
                 }
                 if "workers" not in config:
                     config["workers"] = []
@@ -417,6 +423,7 @@ async def update_setting_endpoint(request):
         config['settings'][key] = value
 
         if save_config(config):
+            reload_constants()
             return web.json_response({"status": "success", "message": f"Setting '{key}' updated."})
         else:
             return await handle_api_error(request, "Failed to save config")
@@ -540,6 +547,10 @@ async def update_master_endpoint(request):
             config['master']['cuda_device'] = data['cuda_device']
         if "extra_args" in data:
             config['master']['extra_args'] = data['extra_args']
+        if "batch_size" in data:
+            config['master']['batch_size'] = data['batch_size']
+        if "rendering_enabled" in data:
+            config['master']['rendering_enabled'] = data['rendering_enabled']
             
         if save_config(config):
             return web.json_response({"status": "success", "message": "Master configuration updated."})
@@ -1918,6 +1929,7 @@ class DistributedCollectorNode:
                 "worker_batch_size": ("INT", {"default": 1, "min": 1, "max": 1024}),
                 "worker_id": ("STRING", {"default": ""}),
                 "pass_through": ("BOOLEAN", {"default": False}),
+                "master_rendering_enabled": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -1925,7 +1937,7 @@ class DistributedCollectorNode:
     FUNCTION = "run"
     CATEGORY = "image"
     
-    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False):
+    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, master_rendering_enabled=True):
         if not multi_job_id or pass_through:
             if pass_through:
                 print(f"[Distributed Collector] Pass-through mode enabled, returning images unchanged")
@@ -1933,7 +1945,7 @@ class DistributedCollectorNode:
 
         # Use async helper to run in server loop
         result = run_async_in_server_loop(
-            self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, worker_id)
+            self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, worker_id, master_rendering_enabled)
         )
         return result
 
@@ -1981,7 +1993,7 @@ class DistributedCollectorNode:
                 raise  # Re-raise to handle at caller level
 
 
-    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id=""):
+    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", master_rendering_enabled=True):
         if is_worker:
             # Worker mode: send images to master in a single batch
             debug_log(f"Worker - Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master")
@@ -2018,8 +2030,18 @@ class DistributedCollectorNode:
             collected_count = 0
             workers_done = set()
             
-            # Use a reasonable timeout for the first image
-            timeout = WORKER_JOB_TIMEOUT
+            # Use a longer timeout for the FIRST wait when master rendering is disabled, since master finishes instantly
+            # and workers may take much longer to start. After first image arrives, use normal timeout.
+            if not master_rendering_enabled:
+                # Master finished instantly, workers need more time for first image - use extended timeout
+                timeout = WORKER_JOB_TIMEOUT * 10
+                debug_log(f"Master rendering disabled - using extended timeout: {timeout}s for first wait")
+            else:
+                # Normal case: master also processes, so timeout is reasonable
+                timeout = WORKER_JOB_TIMEOUT
+            
+            # Track if we've received first image (to reduce timeout after first image when master rendering disabled)
+            first_image_received = False
             
             
             # Get queue size before starting
@@ -2078,8 +2100,16 @@ class DistributedCollectorNode:
                         
                         collected_count += 1
                     
-                    # Once we start receiving images, use shorter timeout
-                    timeout = WORKER_JOB_TIMEOUT
+                    # After receiving first image, reduce timeout to normal for subsequent waits
+                    if not first_image_received:
+                        first_image_received = True
+                        if not master_rendering_enabled:
+                            # Master rendering disabled: reduce from extended to normal timeout after first image
+                            timeout = WORKER_JOB_TIMEOUT
+                            debug_log(f"First image received - reducing timeout to normal: {timeout}s")
+                        else:
+                            # Normal case: timeout already normal, keep it
+                            timeout = WORKER_JOB_TIMEOUT
                     
                     if is_last:
                         workers_done.add(worker_id)
@@ -2152,9 +2182,10 @@ class DistributedCollectorNode:
             # Pattern: master img 1, master img 2, worker 1 img 1, worker 1 img 2, worker 2 img 1, worker 2 img 2, etc.
             ordered_tensors = []
             
-            # Add master images first
-            for i in range(master_batch_size):
-                ordered_tensors.append(images_on_cpu[i:i+1])
+            # Add master images first (only if rendering is enabled)
+            if master_rendering_enabled:
+                for i in range(master_batch_size):
+                    ordered_tensors.append(images_on_cpu[i:i+1])
             
             # Add worker images in order
             # The worker IDs in worker_images are already strings (e.g., "1", "2")
@@ -2239,6 +2270,62 @@ class DistributedSeed:
                 # Fallback: return original seed
                 return (seed,)
 
+# --- Distributed Placeholder Node ---
+class DistributedPlaceholder:
+    """
+    Lightweight CPU-only placeholder node that returns a 1x1 pixel image tensor.
+    Used when master rendering is disabled to avoid GPU usage.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}}
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "generate"
+    CATEGORY = "Distributed"
+    
+    def generate(self):
+        # Return a 1x1x3 CPU tensor (batch=1, height=1, width=1, channels=3)
+        # This is pure CPU, zero GPU/VRAM usage
+        return (torch.zeros(1, 1, 1, 3, dtype=torch.float32),)
+
+# --- Distributed Batch Node ---
+class DistributedBatch:
+    """
+    Provides per-participant batch size based on config.
+    Master uses config.master.batch_size, workers use injected worker_batch_size.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "default_batch": ("INT", {"default": 1, "min": 1, "max": 64}),
+            },
+            "hidden": {
+                "is_worker": ("BOOLEAN", {"default": False}),
+                "worker_batch_size": ("INT", {"default": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("batch_size",)
+    FUNCTION = "get_batch"
+    CATEGORY = "utils"
+
+    def get_batch(self, default_batch=1, is_worker=False, worker_batch_size=1):
+        if is_worker:
+            # Worker: multiply default_batch by worker's batch_size multiplier
+            multiplier = int(worker_batch_size) if worker_batch_size > 0 else 1
+            return (int(default_batch * multiplier),)
+
+        # Master: multiply default_batch by master's batch_size multiplier
+        config = load_config()
+        master_multiplier = config.get('master', {}).get('batch_size', 1)
+        if master_multiplier <= 0:
+            master_multiplier = 1
+        return (int(default_batch * master_multiplier),)
+
 # Define ByPassTypeTuple for flexible return types
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
@@ -2316,18 +2403,26 @@ class ImageBatchDivider:
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
     "DistributedSeed": DistributedSeed,
+    "DistributedBatch": DistributedBatch,
+    "DistributedPlaceholder": DistributedPlaceholder,
     "ImageBatchDivider": ImageBatchDivider,
     # Deadline-named versions for consistency
     "DeadlineDistributedCollector": DistributedCollectorNode,
     "DeadlineDistributedSeed": DistributedSeed,
+    "DeadlineDistributedBatch": DistributedBatch,
+    "DeadlineDistributedPlaceholder": DistributedPlaceholder,
     "DeadlineImageBatchDivider": ImageBatchDivider
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
     "DistributedSeed": "Distributed Seed", 
+    "DistributedBatch": "Distributed Batch",
+    "DistributedPlaceholder": "Distributed Placeholder",
     "ImageBatchDivider": "Image Batch Divider",
     # Deadline-named versions for consistency
     "DeadlineDistributedCollector": "Deadline Distributed Collector",
     "DeadlineDistributedSeed": "Deadline Distributed Seed",
+    "DeadlineDistributedBatch": "Deadline Distributed Batch",
+    "DeadlineDistributedPlaceholder": "Deadline Distributed Placeholder",
     "DeadlineImageBatchDivider": "Deadline Image Batch Divider"
 }
