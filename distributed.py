@@ -27,11 +27,15 @@ from .utils.image import tensor_to_pil, pil_to_tensor, ensure_contiguous
 from .utils.process import is_process_alive, terminate_process, get_python_executable
 from .utils.network import handle_api_error, get_server_port, get_server_loop, get_client_session, cleanup_client_session
 from .utils.async_helpers import run_async_in_server_loop
+from .utils.security import (
+    JOB_TOKEN_FIELD, generate_token, make_job_headers, reject_unsafe_request,
+    require_job_token
+)
 from .utils.constants import (
-    WORKER_JOB_TIMEOUT, PROCESS_TERMINATION_TIMEOUT, WORKER_CHECK_INTERVAL, 
-    STATUS_CHECK_INTERVAL, CHUNK_SIZE, LOG_TAIL_BYTES, WORKER_LOG_PATTERN, 
-    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY, MAX_BATCH,
-    reload_constants
+    PROCESS_TERMINATION_TIMEOUT, WORKER_CHECK_INTERVAL,
+    STATUS_CHECK_INTERVAL, CHUNK_SIZE, LOG_TAIL_BYTES, WORKER_LOG_PATTERN,
+    WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY,
+    get_max_batch, get_worker_job_timeout, reload_constants
 )
 
 # Try to import psutil for better process management
@@ -51,15 +55,52 @@ def cleanup():
 
 atexit.register(cleanup)
 
+def ensure_distributed_job_tokens():
+    prompt_server_instance = server.PromptServer.instance
+    if not hasattr(prompt_server_instance, 'distributed_job_tokens'):
+        prompt_server_instance.distributed_job_tokens = {}
+    return prompt_server_instance.distributed_job_tokens
+
+def store_distributed_job_token(multi_job_id, job_token=None):
+    tokens = ensure_distributed_job_tokens()
+    token = job_token or generate_token()
+    tokens[multi_job_id] = token
+    return token
+
+def get_distributed_job_token(multi_job_id):
+    tokens = ensure_distributed_job_tokens()
+    if multi_job_id in tokens:
+        return tokens[multi_job_id]
+
+    prompt_server_instance = server.PromptServer.instance
+    tile_jobs = getattr(prompt_server_instance, 'distributed_pending_tile_jobs', {})
+    job_data = tile_jobs.get(multi_job_id)
+    if isinstance(job_data, dict):
+        return job_data.get(JOB_TOKEN_FIELD)
+    return None
+
+def clear_distributed_job_token(multi_job_id):
+    ensure_distributed_job_tokens().pop(multi_job_id, None)
+
 # --- API Endpoints ---
 @server.PromptServer.instance.routes.get("/distributed/config")
 async def get_config_endpoint(request):
+    blocked = reject_unsafe_request(request, "read distributed config")
+    if blocked:
+        return blocked
     config = load_config()
-    return web.json_response(config)
+    public_config = json.loads(json.dumps(config))
+    security_config = public_config.get("security")
+    if isinstance(security_config, dict):
+        security_config.pop("instance_token", None)
+    return web.json_response(public_config)
 
 @server.PromptServer.instance.routes.get("/distributed/queue_status/{job_id}")
 async def queue_status_endpoint(request):
     """Check if a job queue is initialized."""
+    blocked = reject_unsafe_request(request, "read queue status")
+    if blocked:
+        return blocked
     try:
         job_id = request.match_info['job_id']
         
@@ -78,6 +119,9 @@ async def queue_status_endpoint(request):
 @server.PromptServer.instance.routes.post("/distributed/worker/clear_launching")
 async def clear_launching_state(request):
     """Clear the launching flag when worker is confirmed running."""
+    blocked = reject_unsafe_request(request, "clear worker launching state")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         worker_id = str(data.get('worker_id'))
@@ -99,6 +143,9 @@ async def clear_launching_state(request):
 @server.PromptServer.instance.routes.get("/distributed/network_info")
 async def get_network_info_endpoint(request):
     """Get network interfaces and recommend best IP for master."""
+    blocked = reject_unsafe_request(request, "read network info")
+    if blocked:
+        return blocked
     import socket
     
     # Get CUDA device if available
@@ -290,6 +337,9 @@ async def get_system_info_endpoint(request):
 
 @server.PromptServer.instance.routes.post("/distributed/config/update_worker")
 async def update_worker_endpoint(request):
+    blocked = reject_unsafe_request(request, "update worker config")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         worker_id = data.get("worker_id")
@@ -372,6 +422,9 @@ async def update_worker_endpoint(request):
 
 @server.PromptServer.instance.routes.post("/distributed/config/delete_worker")
 async def delete_worker_endpoint(request):
+    blocked = reject_unsafe_request(request, "delete worker config")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         worker_id = data.get("worker_id")
@@ -408,6 +461,9 @@ async def delete_worker_endpoint(request):
 @server.PromptServer.instance.routes.post("/distributed/config/update_setting")
 async def update_setting_endpoint(request):
     """Updates a specific key in the settings object."""
+    blocked = reject_unsafe_request(request, "update distributed setting")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         key = data.get("key")
@@ -433,6 +489,9 @@ async def update_setting_endpoint(request):
 @server.PromptServer.instance.routes.post("/distributed/config/update_deadline")
 async def update_deadline_endpoint(request):
     """Updates deadline configuration settings."""
+    blocked = reject_unsafe_request(request, "update Deadline setting")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         config = load_config()
@@ -459,6 +518,9 @@ async def update_deadline_endpoint(request):
 @server.PromptServer.instance.routes.get("/distributed/deadline/pools")
 async def get_deadline_pools_endpoint(request):
     """Get available Deadline pools."""
+    blocked = reject_unsafe_request(request, "read Deadline pools")
+    if blocked:
+        return blocked
     try:
         # Import deadline command helper from the plugin
         try:
@@ -494,6 +556,9 @@ async def get_deadline_pools_endpoint(request):
 @server.PromptServer.instance.routes.get("/distributed/deadline/groups")
 async def get_deadline_groups_endpoint(request):
     """Get available Deadline groups."""
+    blocked = reject_unsafe_request(request, "read Deadline groups")
+    if blocked:
+        return blocked
     try:
         # Import deadline command helper from the plugin
         try:
@@ -529,6 +594,9 @@ async def get_deadline_groups_endpoint(request):
 @server.PromptServer.instance.routes.post("/distributed/config/update_master")
 async def update_master_endpoint(request):
     """Updates master configuration."""
+    blocked = reject_unsafe_request(request, "update master config")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         
@@ -561,23 +629,30 @@ async def update_master_endpoint(request):
 
 @server.PromptServer.instance.routes.post("/distributed/prepare_job")
 async def prepare_job_endpoint(request):
+    blocked = reject_unsafe_request(request, "prepare distributed job")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         multi_job_id = data.get('multi_job_id')
         if not multi_job_id:
             return await handle_api_error(request, "Missing multi_job_id", 400)
 
+        job_token = store_distributed_job_token(multi_job_id)
         async with prompt_server.distributed_jobs_lock:
             if multi_job_id not in prompt_server.distributed_pending_jobs:
                 prompt_server.distributed_pending_jobs[multi_job_id] = asyncio.Queue()
         
         debug_log(f"Prepared queue for job {multi_job_id}")
-        return web.json_response({"status": "success"})
+        return web.json_response({"status": "success", "job_token": job_token})
     except Exception as e:
         return await handle_api_error(request, e)
 
 @server.PromptServer.instance.routes.post("/distributed/clear_memory")
 async def clear_memory_endpoint(request):
+    blocked = reject_unsafe_request(request, "clear memory")
+    if blocked:
+        return blocked
     debug_log("Received request to clear VRAM.")
     try:
         # Use ComfyUI's prompt server queue system like the /free endpoint does
@@ -625,6 +700,9 @@ async def clear_memory_endpoint(request):
 @server.PromptServer.instance.routes.post("/distributed/launch_worker")
 async def launch_worker_endpoint(request):
     """Launch a worker process from the UI."""
+    blocked = reject_unsafe_request(request, "launch worker")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         worker_id = data.get("worker_id")
@@ -686,6 +764,9 @@ async def launch_worker_endpoint(request):
 @server.PromptServer.instance.routes.post("/distributed/stop_worker")
 async def stop_worker_endpoint(request):
     """Stop a worker process that was launched from the UI."""
+    blocked = reject_unsafe_request(request, "stop worker")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         worker_id = data.get("worker_id")
@@ -708,6 +789,9 @@ async def stop_worker_endpoint(request):
 @server.PromptServer.instance.routes.get("/distributed/managed_workers")
 async def get_managed_workers_endpoint(request):
     """Get list of workers managed by this UI instance."""
+    blocked = reject_unsafe_request(request, "read managed workers")
+    if blocked:
+        return blocked
     try:
         managed = worker_manager.get_managed_workers()
         return web.json_response({
@@ -721,6 +805,9 @@ async def get_managed_workers_endpoint(request):
 @server.PromptServer.instance.routes.get("/distributed/local-worker-status")
 async def get_local_worker_status_endpoint(request):
     """Check status of all local workers (localhost/no host specified)."""
+    blocked = reject_unsafe_request(request, "read local worker status")
+    if blocked:
+        return blocked
     try:
         config = load_config()
         worker_statuses = {}
@@ -794,6 +881,9 @@ async def get_local_worker_status_endpoint(request):
 @server.PromptServer.instance.routes.get("/distributed/worker_log/{worker_id}")
 async def get_worker_log_endpoint(request):
     """Get log content for a specific worker."""
+    blocked = reject_unsafe_request(request, "read worker log")
+    if blocked:
+        return blocked
     try:
         worker_id = request.match_info['worker_id']
         
@@ -1645,6 +1735,9 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
 @server.PromptServer.instance.routes.post("/distributed/load_image")
 async def load_image_endpoint(request):
     """Load an image or video file and return it as base64 data with hash."""
+    blocked = reject_unsafe_request(request, "load distributed media")
+    if blocked:
+        return blocked
     try:
         data = await request.json()
         image_path = data.get("image_path")
@@ -1783,6 +1876,9 @@ async def job_complete_endpoint(request):
         
         if multi_job_id is None or worker_id is None:
             return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
+        blocked = require_job_token(request, get_distributed_job_token(multi_job_id), data=data)
+        if blocked:
+            return blocked
 
         # Check for batch mode
         batch_size = int(data.get('batch_size', 0))
@@ -1930,6 +2026,7 @@ class DistributedCollectorNode:
                 "worker_id": ("STRING", {"default": ""}),
                 "pass_through": ("BOOLEAN", {"default": False}),
                 "master_rendering_enabled": ("BOOLEAN", {"default": True}),
+                "job_token": ("STRING", {"default": ""}),
             },
         }
 
@@ -1937,7 +2034,7 @@ class DistributedCollectorNode:
     FUNCTION = "run"
     CATEGORY = "image"
     
-    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, master_rendering_enabled=True):
+    def run(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, master_rendering_enabled=True, job_token=""):
         if not multi_job_id or pass_through:
             if pass_through:
                 print(f"[Distributed Collector] Pass-through mode enabled, returning images unchanged")
@@ -1945,19 +2042,19 @@ class DistributedCollectorNode:
 
         # Use async helper to run in server loop
         result = run_async_in_server_loop(
-            self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, worker_id, master_rendering_enabled)
+            self.execute(images, multi_job_id, is_worker, master_url, enabled_worker_ids, worker_batch_size, worker_id, master_rendering_enabled, job_token)
         )
         return result
 
-    async def send_batch_to_master(self, image_batch, multi_job_id, master_url, worker_id):
+    async def send_batch_to_master(self, image_batch, multi_job_id, master_url, worker_id, job_token=""):
         """Send image batch to master, chunked if large."""
         batch_size = image_batch.shape[0]
         if batch_size == 0:
             return
         
-        
-        for start in range(0, batch_size, MAX_BATCH):
-            chunk = image_batch[start:start + MAX_BATCH]
+        max_batch = get_max_batch()
+        for start in range(0, batch_size, max_batch):
+            chunk = image_batch[start:start + max_batch]
             chunk_size = chunk.shape[0]
             is_chunk_last = (start + chunk_size == batch_size)  # True only for final chunk
             
@@ -1985,7 +2082,7 @@ class DistributedCollectorNode:
                 
                 session = await get_client_session()
                 url = f"{master_url}/distributed/job_complete"
-                async with session.post(url, data=data) as response:
+                async with session.post(url, data=data, headers=make_job_headers(job_token)) as response:
                     response.raise_for_status()
             except Exception as e:
                 log(f"Worker - Failed to send chunk to master: {e}")
@@ -1993,11 +2090,11 @@ class DistributedCollectorNode:
                 raise  # Re-raise to handle at caller level
 
 
-    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", master_rendering_enabled=True):
+    async def execute(self, images, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", master_rendering_enabled=True, job_token=""):
         if is_worker:
             # Worker mode: send images to master in a single batch
             debug_log(f"Worker - Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master")
-            await self.send_batch_to_master(images, multi_job_id, master_url, worker_id)
+            await self.send_batch_to_master(images, multi_job_id, master_url, worker_id, job_token)
             return (images,)
         else:
             # Master mode: collect images from workers
@@ -2034,11 +2131,11 @@ class DistributedCollectorNode:
             # and workers may take much longer to start. After first image arrives, use normal timeout.
             if not master_rendering_enabled:
                 # Master finished instantly, workers need more time for first image - use extended timeout
-                timeout = WORKER_JOB_TIMEOUT * 10
+                timeout = get_worker_job_timeout() * 10
                 debug_log(f"Master rendering disabled - using extended timeout: {timeout}s for first wait")
             else:
                 # Normal case: master also processes, so timeout is reasonable
-                timeout = WORKER_JOB_TIMEOUT
+                timeout = get_worker_job_timeout()
             
             # Track if we've received first image (to reduce timeout after first image when master rendering disabled)
             first_image_received = False
@@ -2105,11 +2202,11 @@ class DistributedCollectorNode:
                         first_image_received = True
                         if not master_rendering_enabled:
                             # Master rendering disabled: reduce from extended to normal timeout after first image
-                            timeout = WORKER_JOB_TIMEOUT
+                            timeout = get_worker_job_timeout()
                             debug_log(f"First image received - reducing timeout to normal: {timeout}s")
                         else:
                             # Normal case: timeout already normal, keep it
-                            timeout = WORKER_JOB_TIMEOUT
+                            timeout = get_worker_job_timeout()
                     
                     if is_last:
                         workers_done.add(worker_id)
@@ -2177,6 +2274,7 @@ class DistributedCollectorNode:
             async with prompt_server.distributed_jobs_lock:
                 if multi_job_id in prompt_server.distributed_pending_jobs:
                     del prompt_server.distributed_pending_jobs[multi_job_id]
+            clear_distributed_job_token(multi_job_id)
 
             # Reorder images according to seed distribution pattern
             # Pattern: master img 1, master img 2, worker 1 img 1, worker 1 img 2, worker 2 img 1, worker 2 img 2, etc.
@@ -2263,7 +2361,7 @@ class DistributedSeed:
                 
                 offset = worker_index + 1
                 new_seed = seed + offset
-                debug_log(f"Distributor - Worker {worker_index}: seed={seed} → {new_seed}")
+                debug_log(f"Distributor - Worker {worker_index}: seed={seed} -> {new_seed}")
                 return (new_seed,)
             except (ValueError, IndexError) as e:
                 debug_log(f"Distributor - Error parsing worker_id '{worker_id}': {e}")

@@ -1,5 +1,9 @@
 import { BUTTON_STYLES, UI_STYLES, STATUS_COLORS, UI_COLORS, TIMEOUTS } from './constants.js';
 
+function appendLineBreak(parent) {
+    parent.appendChild(document.createElement('br'));
+}
+
 const cardConfigs = {
     master: {
         checkbox: { 
@@ -17,7 +21,7 @@ const cardConfigs = {
         },
         infoText: (data, extension) => {
             const cudaDevice = extension.config?.master?.cuda_device ?? extension.masterCudaDevice;
-            const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} • ` : '';
+            const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} - ` : '';
             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
             return `<strong id="master-name-display">${data?.name || extension.config?.master?.name || "Master"}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};"><span id="master-cuda-info">${cudaInfo}Port ${port}</span></small>`;
         },
@@ -57,7 +61,7 @@ const cardConfigs = {
             } else if (isRemote) {
                 return `<strong>${data.name}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};">${data.host}:${data.port}</small>`;
             } else {
-                const cudaInfo = data.cuda_device !== undefined ? `CUDA ${data.cuda_device} • ` : '';
+                const cudaInfo = data.cuda_device !== undefined ? `CUDA ${data.cuda_device} - ` : '';
                 return `<strong>${data.name}</strong><br><small style="color: ${UI_COLORS.MUTED_TEXT};">${cudaInfo}Port ${data.port}</small>`;
             }
         },
@@ -84,7 +88,7 @@ const cardConfigs = {
             color: 'transparent', 
             border: `1px solid ${UI_COLORS.BORDER_LIGHT}` 
         },
-        infoText: () => `<strong style="color: #aaa; font-size: 16px;">Add New Worker</strong><br><small style="color: ${UI_COLORS.BORDER_LIGHT};">[CUDA] • [Port]</small>`,
+        infoText: () => `<strong style="color: #aaa; font-size: 16px;">Add New Worker</strong><br><small style="color: ${UI_COLORS.BORDER_LIGHT};">[CUDA] - [Port]</small>`,
         controls: { 
             type: 'ghost', 
             text: 'Configure', 
@@ -325,7 +329,7 @@ export class DistributedUI {
         if (cudaInfo) {
             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
             if (cudaDevice !== undefined && cudaDevice !== null) {
-                cudaInfo.textContent = `CUDA ${cudaDevice} • Port ${port}`;
+                cudaInfo.textContent = `CUDA ${cudaDevice} - Port ${port}`;
             } else {
                 cudaInfo.textContent = `Port ${port}`;
             }
@@ -373,7 +377,11 @@ export class DistributedUI {
         `;
         
         const messageSpan = document.createElement('span');
-        messageSpan.innerHTML = `Connection issue: Master address <strong>${masterHost}</strong> is not reachable. The cloudflare tunnel may be offline.`;
+        messageSpan.appendChild(document.createTextNode('Connection issue: Master address '));
+        const hostStrong = document.createElement('strong');
+        hostStrong.textContent = masterHost;
+        messageSpan.appendChild(hostStrong);
+        messageSpan.appendChild(document.createTextNode(' is not reachable. The cloudflare tunnel may be offline.'));
         messageSpan.style.fontSize = '13px';
         
         const resetButton = document.createElement('button');
@@ -591,7 +599,7 @@ export class DistributedUI {
         refreshContainer.appendChild(refreshLabel);
         
         // Close button
-        const closeBtn = this.createButton('✕', 
+        const closeBtn = this.createButton('x',
             () => {
                 extension.stopLogAutoRefresh();
                 modal.remove();
@@ -858,7 +866,7 @@ export class DistributedUI {
         settingsTitle.style.cssText = "margin: 0; font-size: 14px;";
         
         const settingsToggle = document.createElement("span");
-        settingsToggle.textContent = "▶"; // Right arrow when collapsed
+        settingsToggle.textContent = ">"; // Right arrow when collapsed
         settingsToggle.style.cssText = "font-size: 12px; color: #888; transition: all 0.2s ease;";
         
         settingsRow.appendChild(settingsToggle);
@@ -873,7 +881,7 @@ export class DistributedUI {
         
         if (config?.type === 'icon') {
             column.style.flex = `0 0 ${config.width || 44}px`;
-            column.innerHTML = config.content || '+';
+            column.textContent = config.content || '+';
             if (config.style) {
                 const styles = config.style.split(';').filter(s => s.trim());
                 styles.forEach(style => {
@@ -932,6 +940,78 @@ export class DistributedUI {
         return column;
     }
 
+    populateInfoSpan(infoSpan, entityType, data, extension, config) {
+        infoSpan.replaceChildren();
+
+        if (entityType === 'master') {
+            const cudaDevice = extension.config?.master?.cuda_device ?? extension.masterCudaDevice;
+            const cudaInfo = cudaDevice !== undefined ? `CUDA ${cudaDevice} - ` : '';
+            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+
+            const name = document.createElement('strong');
+            name.id = 'master-name-display';
+            name.textContent = data?.name || extension.config?.master?.name || 'Master';
+            infoSpan.appendChild(name);
+            appendLineBreak(infoSpan);
+
+            const small = document.createElement('small');
+            small.style.color = UI_COLORS.MUTED_TEXT;
+            const detail = document.createElement('span');
+            detail.id = 'master-cuda-info';
+            detail.textContent = `${cudaInfo}Port ${port}`;
+            small.appendChild(detail);
+            infoSpan.appendChild(small);
+            return;
+        }
+
+        if (entityType === 'worker') {
+            const isRemote = extension.isRemoteWorker(data);
+            const isCloud = data.type === 'cloud';
+
+            const name = document.createElement('strong');
+            name.textContent = data.name || data.id || 'Worker';
+            infoSpan.appendChild(name);
+            appendLineBreak(infoSpan);
+
+            const small = document.createElement('small');
+            small.style.color = UI_COLORS.MUTED_TEXT;
+            if (isCloud) {
+                small.textContent = data.host || '';
+            } else if (isRemote) {
+                small.textContent = `${data.host || ''}:${data.port || ''}`;
+            } else {
+                const cudaInfo = data.cuda_device !== undefined ? `CUDA ${data.cuda_device} - ` : '';
+                small.textContent = `${cudaInfo}Port ${data.port || ''}`;
+            }
+            infoSpan.appendChild(small);
+            return;
+        }
+
+        if (entityType === 'blueprint') {
+            const title = document.createElement('strong');
+            title.textContent = 'Add New Worker';
+            title.style.cssText = 'color: #aaa; font-size: 16px;';
+            infoSpan.appendChild(title);
+            appendLineBreak(infoSpan);
+
+            const small = document.createElement('small');
+            small.style.color = UI_COLORS.BORDER_LIGHT;
+            small.textContent = '[CUDA] - [Port]';
+            infoSpan.appendChild(small);
+            return;
+        }
+
+        if (entityType === 'add') {
+            const label = document.createElement('span');
+            label.textContent = 'Add New Worker';
+            label.style.cssText = `color: ${UI_COLORS.ICON_COLOR}; font-weight: bold; font-size: 13px;`;
+            infoSpan.appendChild(label);
+            return;
+        }
+
+        infoSpan.textContent = config.infoText ? config.infoText(data, extension) : '';
+    }
+
     createStatusDotHelper(config, data, extension) {
         let color = config.color || "#666";
         let title = config.title || "Status";
@@ -963,7 +1043,7 @@ export class DistributedUI {
     createSettingsToggleHelper(expandedId, extension) {
         const arrow = document.createElement("span");
         arrow.className = "settings-arrow";
-        arrow.innerHTML = "▶";
+        arrow.textContent = ">";
         arrow.style.cssText = this.styles.settingsArrow;
         
         const isExpanded = typeof expandedId === 'function' ? 
@@ -1245,7 +1325,7 @@ export class DistributedUI {
         workerContent.appendChild(statusDot);
 
         const infoSpan = document.createElement("span");
-        infoSpan.innerHTML = config.infoText(data, extension);
+        this.populateInfoSpan(infoSpan, entityType, data, extension, config);
         workerContent.appendChild(infoSpan);
 
         infoRow.appendChild(workerContent);

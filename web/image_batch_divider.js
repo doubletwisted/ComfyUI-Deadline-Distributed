@@ -3,7 +3,7 @@ import { app } from "/scripts/app.js";
 app.registerExtension({
     name: "Distributed.ImageBatchDivider",
     async nodeCreated(node) {
-        if (node.comfyClass === "ImageBatchDivider") {
+        if (node.comfyClass === "ImageBatchDivider" || node.comfyClass === "DeadlineImageBatchDivider") {
             try {
                 const updateOutputs = () => {
                     if (!node.widgets) return;
@@ -79,7 +79,7 @@ app.registerExtension({
     },
     
     nodeBeforeRemove(node) {
-        if (node.comfyClass === "ImageBatchDivider" && node._batchDividerCleanup) {
+        if ((node.comfyClass === "ImageBatchDivider" || node.comfyClass === "DeadlineImageBatchDivider") && node._batchDividerCleanup) {
             node._batchDividerCleanup();
         }
     }

@@ -31,6 +31,11 @@ def get_default_config():
             "priority": 50,
             "pool": "none",
             "group": "none"
+        },
+        "security": {
+            "instance_token": "",
+            "require_private_network": True,
+            "allow_missing_origin_from_private_network": True
         }
     }
 

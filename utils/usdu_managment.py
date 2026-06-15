@@ -14,12 +14,13 @@ import torch
 from .logging import debug_log, log
 from .network import handle_api_error, get_client_session
 from .image import tensor_to_pil
+from .security import JOB_TOKEN_FIELD, require_job_token, make_job_headers
 
 # Configure maximum payload size (50MB default, configurable via environment variable)
 MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
 
-# Import HEARTBEAT_TIMEOUT from constants
-from .constants import HEARTBEAT_TIMEOUT
+# Import runtime settings from constants
+from .constants import get_heartbeat_timeout
 
 
 # Unified Job Data Structure Keys
@@ -36,7 +37,7 @@ JOB_NUM_TILES_PER_IMAGE = 'num_tiles_per_image'  # For static
 TASK_TYPE_TILE = 'tile'
 TASK_TYPE_IMAGE = 'image'
 
-async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None):
+async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_image=None, all_indices=None, enabled_workers=None, task_assignments=None, job_token=None):
     """Unified initialization for job queues in static and dynamic modes."""
     prompt_server = ensure_tile_jobs_initialized()
     async with prompt_server.distributed_tile_jobs_lock:
@@ -51,6 +52,7 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
             JOB_WORKER_STATUS: {w: time.time() for w in enabled_workers or []},
             JOB_ASSIGNED_TO_WORKERS: {w: [] for w in enabled_workers or []},
             JOB_PENDING_TASKS: asyncio.Queue(),
+            JOB_TOKEN_FIELD: job_token,
         }
 
         if mode == 'dynamic':
@@ -61,15 +63,21 @@ async def _init_job_queue(multi_job_id, mode, batch_size=None, num_tiles_per_ima
             debug_log(f"Initialized dynamic queue with {batch_size} pending images")
         elif mode == 'static':
             job_data[JOB_NUM_TILES_PER_IMAGE] = num_tiles_per_image
-            # For static with dynamic distribution, populate all tile indices in pending queue
             pending_queue = job_data[JOB_PENDING_TASKS]
             total_tiles = batch_size * num_tiles_per_image
-            for i in range(total_tiles):
-                await pending_queue.put(i)
-            debug_log(f"Initialized static queue with {total_tiles} pending tiles for dynamic distribution")
-            
+
+            if task_assignments is None:
+                # Dynamic static mode: workers and master pull all tiles from the pending queue.
+                for i in range(total_tiles):
+                    await pending_queue.put(i)
+                debug_log(f"Initialized static queue with {total_tiles} pending tiles for dynamic distribution")
+            else:
+                # Legacy static mode: tasks are pre-assigned, so pending starts empty.
+                # Timed-out worker tasks are the only ones that should be requeued here.
+                debug_log(f"Initialized static queue with pre-assigned tasks and empty pending queue")
+
             # Keep backward compatibility - if task assignments provided, still track them
-            if task_assignments and enabled_workers:
+            if task_assignments is not None and enabled_workers:
                 # task_assignments[0] is for master, 1+ are for workers
                 for i, worker_id in enumerate(enabled_workers):
                     if i + 1 < len(task_assignments):
@@ -103,11 +111,11 @@ async def _get_next_task(multi_job_id):
         job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
         if not job_data or JOB_PENDING_TASKS not in job_data:
             return None
-        try:
-            task_id = await asyncio.wait_for(job_data[JOB_PENDING_TASKS].get(), timeout=1.0)
-            return task_id
-        except asyncio.TimeoutError:
-            return None
+        pending_queue = job_data[JOB_PENDING_TASKS]
+    try:
+        return await asyncio.wait_for(pending_queue.get(), timeout=1.0)
+    except asyncio.TimeoutError:
+        return None
 
 async def _drain_results_queue(multi_job_id):
     """Drain pending results from queue and update completed_tasks. Returns count drained."""
@@ -122,7 +130,7 @@ async def _drain_results_queue(multi_job_id):
         collected = 0
         while not q.empty():
             try:
-                result = await asyncio.wait_for(q.get(), timeout=0.1)
+                result = q.get_nowait()
                 worker_id = result['worker_id']
                 is_last = result.get('is_last', False)
                 
@@ -157,7 +165,7 @@ async def _drain_results_queue(multi_job_id):
                     # Track worker completion
                     if worker_id in job_data[JOB_WORKER_STATUS]:
                         del job_data[JOB_WORKER_STATUS][worker_id]
-            except asyncio.TimeoutError:
+            except asyncio.QueueEmpty:
                 break
 
         return collected
@@ -175,7 +183,7 @@ async def _check_and_requeue_timed_out_workers(multi_job_id, total_tasks):
         completed_tasks = job_data.get(JOB_COMPLETED_TASKS, {})
 
         for worker, last_heartbeat in list(job_data.get(JOB_WORKER_STATUS, {}).items()):
-            if current_time - last_heartbeat > HEARTBEAT_TIMEOUT:
+            if current_time - last_heartbeat > get_heartbeat_timeout():
                 log(f"Worker {worker} timed out")
                 for task_id in job_data.get(JOB_ASSIGNED_TO_WORKERS, {}).get(worker, []):
                     if task_id not in completed_tasks:
@@ -205,13 +213,13 @@ async def _mark_task_completed(multi_job_id, task_id, result):
         if job_data and JOB_COMPLETED_TASKS in job_data:
             job_data[JOB_COMPLETED_TASKS][task_id] = result
 
-async def _send_heartbeat_to_master(multi_job_id, master_url, worker_id):
+async def _send_heartbeat_to_master(multi_job_id, master_url, worker_id, job_token=None):
     """Send heartbeat to master."""
     try:
         data = {'multi_job_id': multi_job_id, 'worker_id': str(worker_id)}
         session = await get_client_session()
         url = f"{master_url}/distributed/heartbeat"
-        async with session.post(url, json=data) as response:
+        async with session.post(url, json=data, headers=make_job_headers(job_token)) as response:
             response.raise_for_status()
     except Exception as e:
         debug_log(f"Heartbeat failed: {e}")
@@ -242,22 +250,32 @@ async def request_task_endpoint(request):
                 job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
                 mode = job_data.get(JOB_MODE)
                 pending_queue = job_data.get(JOB_PENDING_TASKS)
-                if pending_queue:
-                    try:
-                        task_id = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
-                        if JOB_ASSIGNED_TO_WORKERS in job_data and worker_id in job_data[JOB_ASSIGNED_TO_WORKERS]:
-                            job_data[JOB_ASSIGNED_TO_WORKERS][worker_id].append(task_id)
-                        if JOB_WORKER_STATUS in job_data:
-                            job_data[JOB_WORKER_STATUS][worker_id] = time.time()
-                        remaining = pending_queue.qsize()
-                        debug_log(f"Assigned task {task_id} to worker {worker_id} in {mode} mode")
-                        return web.json_response({"task_id": task_id, "estimated_remaining": remaining, "mode": mode})
-                    except asyncio.TimeoutError:
-                        return web.json_response({"task_id": None})
-                else:
+                expected_token = job_data.get(JOB_TOKEN_FIELD)
+                if not pending_queue:
                     return await handle_api_error(request, "No pending tasks", 400)
             else:
                 return await handle_api_error(request, "Job not found", 404)
+
+        blocked = require_job_token(request, expected_token, data=data)
+        if blocked:
+            return blocked
+
+        try:
+            task_id = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            return web.json_response({"task_id": None})
+
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data:
+                return await handle_api_error(request, "Job not found", 404)
+            if JOB_ASSIGNED_TO_WORKERS in job_data and worker_id in job_data[JOB_ASSIGNED_TO_WORKERS]:
+                job_data[JOB_ASSIGNED_TO_WORKERS][worker_id].append(task_id)
+            if JOB_WORKER_STATUS in job_data:
+                job_data[JOB_WORKER_STATUS][worker_id] = time.time()
+            remaining = pending_queue.qsize()
+            debug_log(f"Assigned task {task_id} to worker {worker_id} in {mode} mode")
+            return web.json_response({"task_id": task_id, "estimated_remaining": remaining, "mode": mode})
     except Exception as e:
         return await handle_api_error(request, e, 500)
 
@@ -276,6 +294,9 @@ async def heartbeat_endpoint(request):
         async with prompt_server.distributed_tile_jobs_lock:
             if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                 job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
+                blocked = require_job_token(request, job_data.get(JOB_TOKEN_FIELD), data=data)
+                if blocked:
+                    return blocked
                 if JOB_WORKER_STATUS in job_data:
                     job_data[JOB_WORKER_STATUS][worker_id] = time.time()
                     debug_log(f"Heartbeat from worker {worker_id}")
@@ -304,6 +325,15 @@ async def submit_tiles_endpoint(request):
             return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
 
         prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data:
+                return await handle_api_error(request, "Job not found", 404)
+            if JOB_MODE in job_data and job_data[JOB_MODE] != 'static':
+                return await handle_api_error(request, "Mode mismatch: expected static mode", 400)
+            blocked = require_job_token(request, job_data.get(JOB_TOKEN_FIELD), data=data)
+            if blocked:
+                return blocked
         
         batch_size = int(data.get('batch_size', 0))
         tiles = []
@@ -431,9 +461,6 @@ async def submit_tiles_endpoint(request):
         async with prompt_server.distributed_tile_jobs_lock:
             if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                 job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                if JOB_MODE in job_data and job_data[JOB_MODE] != 'static':
-                    return await handle_api_error(request, "Mode mismatch: expected static mode", 400)
-                
                 q = job_data[JOB_QUEUE]
                 if batch_size > 0 or len(tiles) > 0:
                     await q.put({
@@ -471,6 +498,15 @@ async def submit_image_endpoint(request):
             return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
 
         prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data:
+                return await handle_api_error(request, "Job not found", 404)
+            if JOB_MODE in job_data and job_data[JOB_MODE] != 'dynamic':
+                return await handle_api_error(request, "Mode mismatch: expected dynamic mode", 400)
+            blocked = require_job_token(request, job_data.get(JOB_TOKEN_FIELD), data=data)
+            if blocked:
+                return blocked
         
         # Handle image submission
         if 'full_image' in data and 'image_idx' in data:
@@ -483,8 +519,6 @@ async def submit_image_endpoint(request):
             async with prompt_server.distributed_tile_jobs_lock:
                 if multi_job_id in prompt_server.distributed_pending_tile_jobs:
                     job_data = prompt_server.distributed_pending_tile_jobs[multi_job_id]
-                    if JOB_MODE in job_data and job_data[JOB_MODE] != 'dynamic':
-                        return await handle_api_error(request, "Mode mismatch: expected dynamic mode", 400)
                     if JOB_QUEUE in job_data:
                         await job_data[JOB_QUEUE].put({
                             'worker_id': worker_id,
@@ -533,6 +567,13 @@ async def tile_complete_endpoint(request):
             return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
 
         prompt_server = ensure_tile_jobs_initialized()
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data:
+                return await handle_api_error(request, "Job not found", 404)
+            blocked = require_job_token(request, job_data.get(JOB_TOKEN_FIELD), data=data)
+            if blocked:
+                return blocked
         
         if 'full_image' in data and 'image_idx' in data:
             image_idx = int(data.get('image_idx'))
@@ -769,6 +810,7 @@ async def request_image_endpoint(request):
                     return await handle_api_error(request, "Invalid job data structure", 500)
                 
                 mode = job_data['mode']
+                expected_token = job_data.get(JOB_TOKEN_FIELD)
                 
                 # Handle both dynamic and static modes
                 if mode == 'dynamic' and 'pending_images' in job_data:
@@ -777,32 +819,35 @@ async def request_image_endpoint(request):
                     pending_queue = job_data[JOB_PENDING_TASKS]
                 else:
                     return await handle_api_error(request, f"Invalid {mode} mode configuration", 400)
-                
-                try:
-                    task_idx = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
-                    # Track assigned task
-                    if 'assigned_to_workers' in job_data and worker_id in job_data['assigned_to_workers']:
-                        job_data['assigned_to_workers'][worker_id].append(task_idx)
-                    # Update worker heartbeat
-                    if 'worker_status' in job_data:
-                        job_data['worker_status'][worker_id] = time.time()
-                    # Get estimated remaining count
-                    remaining = pending_queue.qsize()  # Approximate
-                    
-                    # Return appropriate response based on mode
-                    if mode == 'dynamic':
-                        debug_log(f"UltimateSDUpscale API - Assigned image {task_idx} to worker {worker_id}")
-                        return web.json_response({"image_idx": task_idx, "estimated_remaining": remaining})
-                    else:  # static
-                        debug_log(f"UltimateSDUpscale API - Assigned tile {task_idx} to worker {worker_id}")
-                        return web.json_response({"tile_idx": task_idx, "estimated_remaining": remaining})
-                except asyncio.TimeoutError:
-                    if mode == 'dynamic':
-                        return web.json_response({"image_idx": None})
-                    else:
-                        return web.json_response({"tile_idx": None})
             else:
                 return await handle_api_error(request, "Job not found", 404)
+
+        blocked = require_job_token(request, expected_token, data=data)
+        if blocked:
+            return blocked
+
+        try:
+            task_idx = await asyncio.wait_for(pending_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            if mode == 'dynamic':
+                return web.json_response({"image_idx": None})
+            return web.json_response({"tile_idx": None})
+
+        async with prompt_server.distributed_tile_jobs_lock:
+            job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+            if not job_data:
+                return await handle_api_error(request, "Job not found", 404)
+            if 'assigned_to_workers' in job_data and worker_id in job_data['assigned_to_workers']:
+                job_data['assigned_to_workers'][worker_id].append(task_idx)
+            if 'worker_status' in job_data:
+                job_data['worker_status'][worker_id] = time.time()
+            remaining = pending_queue.qsize()
+
+        if mode == 'dynamic':
+            debug_log(f"UltimateSDUpscale API - Assigned image {task_idx} to worker {worker_id}")
+            return web.json_response({"image_idx": task_idx, "estimated_remaining": remaining})
+        debug_log(f"UltimateSDUpscale API - Assigned tile {task_idx} to worker {worker_id}")
+        return web.json_response({"tile_idx": task_idx, "estimated_remaining": remaining})
     except Exception as e:
         return await handle_api_error(request, e, 500)
 
@@ -815,6 +860,10 @@ async def job_status_endpoint(request):
     prompt_server = ensure_tile_jobs_initialized()
     async with prompt_server.distributed_tile_jobs_lock:
         job_data = prompt_server.distributed_pending_tile_jobs.get(multi_job_id)
+        if job_data:
+            blocked = require_job_token(request, job_data.get(JOB_TOKEN_FIELD))
+            if blocked:
+                return blocked
         ready = bool(job_data and isinstance(job_data, dict) and 'queue' in job_data)
         return web.json_response({"ready": ready})
 

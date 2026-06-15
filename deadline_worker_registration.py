@@ -19,9 +19,21 @@ except:
     def debug_log(msg): print(f"[DEBUG] {msg}")
     def log(msg): print(f"[LOG] {msg}")
 
+try:
+    from .utils.security import DEADLINE_TOKEN_FIELD, make_deadline_headers
+except Exception:
+    DEADLINE_TOKEN_FIELD = "registration_token"
+
+    def make_deadline_headers(registration_token):
+        return {"X-Comfy-Deadline-Registration-Token": str(registration_token)} if registration_token else {}
+
 # Import centralized configuration
 try:
-    from .utils.distributed_config import get_distributed_config, get_deadline_context
+    from .utils.distributed_config import (
+        get_distributed_config,
+        get_deadline_context,
+        get_plugin_info_entry_with_default,
+    )
 except ImportError:
     # Fallback if utils not available
     def get_distributed_config():
@@ -36,7 +48,12 @@ except ImportError:
             'task_id': os.environ.get('DEADLINE_TASK_ID', 'unknown'), 
             'job_id': os.environ.get('DEADLINE_JOB_ID', 'unknown'),
             'master_ws': os.environ.get('COMFY_MASTER_WS', 'localhost:8188'),
+            'master_host': os.environ.get('COMFY_MASTER_HOST', 'localhost'),
+            'master_port': os.environ.get('COMFY_MASTER_PORT', '8188'),
         }
+
+    def get_plugin_info_entry_with_default(key, default_value):
+        return os.environ.get(key.upper().replace(' ', '_'), default_value)
 
 class DeadlineWorkerRegistration:
     """Node for registering Deadline workers with ComfyUI-Distributed master"""
@@ -60,7 +77,7 @@ class DeadlineWorkerRegistration:
     def register_worker(self, trigger=None):
         """Register this Deadline worker with the master ComfyUI instance"""
         
-        debug_log("🔄 DeadlineWorkerRegistration.register_worker() called")
+        debug_log("DeadlineWorkerRegistration.register_worker() called")
         # Get distributed configuration (plugin info with environment fallback)
         worker_mode, distributed_mode, force_new_instance = get_distributed_config()
         deadline_context = get_deadline_context()
@@ -80,12 +97,12 @@ class DeadlineWorkerRegistration:
         import socket
         hostname = socket.gethostname()
         
-        debug_log(f"🔄 Task {task_id} of job {job_id} registering worker {worker_id} on machine {hostname}")
-        debug_log(f"📍 Each Deadline worker process registers independently (supports multi-GPU machines)")
+        debug_log(f"Task {task_id} of job {job_id} registering worker {worker_id} on machine {hostname}")
+        debug_log(f"Each Deadline worker process registers independently (supports multi-GPU machines)")
         
         # Check if we're in Deadline distributed mode
         if not distributed_mode:
-            message = "❌ Not in Deadline distributed mode - registration skipped"
+            message = "Not in Deadline distributed mode - registration skipped"
             debug_log(message)
             return {"ui": {"status": [message]}, "result": (message,)}
         
@@ -98,6 +115,10 @@ class DeadlineWorkerRegistration:
         worker_ip = self._get_worker_ip()
         worker_port = self._get_worker_port()
         job_id = os.environ.get('DEADLINE_JOB_ID', '')
+        registration_token = (
+            os.environ.get('COMFY_DISTRIBUTED_REGISTRATION_TOKEN')
+            or get_plugin_info_entry_with_default('RegistrationToken', '')
+        )
         
         debug_log(f"Registering Deadline worker: {worker_id} at {worker_ip}:{worker_port}")
         debug_log(f"Master: {master_host}:{master_port}")
@@ -112,38 +133,40 @@ class DeadlineWorkerRegistration:
                 'worker_ip': worker_ip,
                 'worker_port': worker_port,
                 'job_id': job_id,
-                'deadline_worker_name': deadline_worker_name
+                'deadline_worker_name': deadline_worker_name,
+                DEADLINE_TOKEN_FIELD: registration_token
             }
             
             response = requests.post(
                 f"http://{master_host}:{master_port}/deadline/register_worker",
                 json=registration_data,
+                headers=make_deadline_headers(registration_token),
                 timeout=10
             )
             
             if response.status_code == 200:
                 result = response.json()
                 if result.get('success'):
-                    log(f"✅ Successfully registered Deadline worker {worker_id} with master")
+                    log(f"Successfully registered Deadline worker {worker_id} with master")
                     
                     # Start heartbeat in background
-                    self._start_heartbeat(master_host, master_port, worker_id)
+                    self._start_heartbeat(master_host, master_port, worker_id, registration_token)
                     
-                    message = f"✅ Registered worker {worker_id} - Registration complete"
+                    message = f"Registered worker {worker_id} - Registration complete"
                     debug_log(f"Registration workflow completed. Deadline plugin will handle keep-alive.")
                     
                     return {"ui": {"status": [message]}, "result": (message,)}
                 else:
-                    error_msg = f"❌ Registration failed: {result.get('error', 'Unknown error')}"
+                    error_msg = f"Registration failed: {result.get('error', 'Unknown error')}"
                     log(error_msg)
                     return {"ui": {"status": [error_msg]}, "result": (error_msg,)}
             else:
-                error_msg = f"❌ Registration HTTP error: {response.status_code}"
+                error_msg = f"Registration HTTP error: {response.status_code}"
                 log(error_msg)
                 return {"ui": {"status": [error_msg]}, "result": (error_msg,)}
                 
         except Exception as e:
-            error_msg = f"❌ Registration error: {str(e)}"
+            error_msg = f"Registration error: {str(e)}"
             log(error_msg)
             return {"ui": {"status": [error_msg]}, "result": (error_msg,)}
     
@@ -248,7 +271,7 @@ class DeadlineWorkerRegistration:
         except:
             return 8289  # Default worker port
     
-    def _start_heartbeat(self, master_host: str, master_port: int, worker_id: str):
+    def _start_heartbeat(self, master_host: str, master_port: int, worker_id: str, registration_token: str):
         """Start heartbeat thread to keep worker registered"""
         import threading
         import time
@@ -260,7 +283,8 @@ class DeadlineWorkerRegistration:
                     
                     response = requests.post(
                         f"http://{master_host}:{master_port}/deadline/worker_heartbeat",
-                        json={'worker_id': worker_id},
+                        json={'worker_id': worker_id, DEADLINE_TOKEN_FIELD: registration_token},
+                        headers=make_deadline_headers(registration_token),
                         timeout=5
                     )
                     
@@ -283,19 +307,19 @@ class DeadlineWorkerRegistration:
         import time
         import threading
         
-        debug_log(f"🔄 Worker {worker_id} entering keep-alive mode...")
+        debug_log(f"Worker {worker_id} entering keep-alive mode...")
         
         # Start a daemon thread to keep the process alive
         def keep_alive_loop():
             try:
                 # This loop will keep running, preventing the task from completing
                 while True:
-                    debug_log(f"🔄 Worker {worker_id} is alive and waiting for work...")
+                    debug_log(f"Worker {worker_id} is alive and waiting for work...")
                     time.sleep(60)  # Check every minute
             except KeyboardInterrupt:
-                debug_log(f"🛑 Worker {worker_id} keep-alive interrupted")
+                debug_log(f"Worker {worker_id} keep-alive interrupted")
             except Exception as e:
-                debug_log(f"❌ Worker {worker_id} keep-alive error: {e}")
+                debug_log(f"Worker {worker_id} keep-alive error: {e}")
         
         # Start keep-alive in daemon thread
         keep_alive_thread = threading.Thread(target=keep_alive_loop, daemon=True)
@@ -303,13 +327,13 @@ class DeadlineWorkerRegistration:
         
         # Also block the main thread to prevent task completion
         try:
-            debug_log(f"🔄 Main thread blocking to keep task alive...")
+            debug_log(f"Main thread blocking to keep task alive...")
             while True:
                 time.sleep(30)  # Keep main thread alive
         except KeyboardInterrupt:
-            debug_log(f"🛑 Worker {worker_id} main thread interrupted")
+            debug_log(f"Worker {worker_id} main thread interrupted")
         except Exception as e:
-            debug_log(f"❌ Worker {worker_id} main thread error: {e}")
+            debug_log(f"Worker {worker_id} main thread error: {e}")
 
 # Node registration
 NODE_CLASS_MAPPINGS = {

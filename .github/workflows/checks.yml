@@ -1,0 +1,44 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  syntax:
+    name: Syntax checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Parse Python files
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          for path in Path(".").rglob("*.py"):
+              if any(part in {".git", "__pycache__"} for part in path.parts):
+                  continue
+              ast.parse(path.read_text(encoding="utf-8"))
+          PY
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check JavaScript files
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            node --check "$file"
+          done < <(find web -name '*.js' -print)

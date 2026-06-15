@@ -146,9 +146,13 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         
         // Map original node IDs to truly unique job IDs for this specific run
         const job_id_map = new Map(allDistributedNodes.map(node => [node.id, `${executionPrefix}_${node.id}`]));
+        const job_token_map = new Map();
         
         // Prepare a separate job queue on the backend for each unique job ID
-        const preparePromises = Array.from(job_id_map.values()).map(uniqueId => prepareDistributedJob(extension, uniqueId));
+        const preparePromises = Array.from(job_id_map.values()).map(async (uniqueId) => {
+            const result = await prepareDistributedJob(extension, uniqueId);
+            job_token_map.set(uniqueId, result?.job_token || "");
+        });
         await Promise.all(preparePromises);
 
         const jobs = [];
@@ -159,7 +163,8 @@ export async function executeParallelDistributed(extension, promptWrapper) {
             const options = { 
                 enabled_worker_ids: activeWorkers.map(w => w.id), 
                 workflow: promptWrapper.workflow,
-                job_id_map: job_id_map // Pass the map of unique IDs
+                job_id_map: job_id_map, // Pass the map of unique IDs
+                job_token_map: job_token_map
             };
             
             const jobApiPrompt = await prepareApiPromptForParticipant(
@@ -331,6 +336,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             
             // Use the truly unique ID for this execution
             inputs.multi_job_id = uniqueJobId;
+            inputs.job_token = options.job_token_map?.get(uniqueJobId) || "";
             inputs.is_worker = !isMaster;
             if (isMaster) {
                 inputs.enabled_worker_ids = JSON.stringify(options.enabled_worker_ids || []);
@@ -354,6 +360,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
         const uniqueJobId = options.job_id_map ? options.job_id_map.get(upscaleNode.id) : upscaleNode.id;
         
         inputs.multi_job_id = uniqueJobId;
+        inputs.job_token = options.job_token_map?.get(uniqueJobId) || "";
         inputs.is_worker = !isMaster;
         
         if (isMaster) {
@@ -372,7 +379,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
 
 export async function prepareDistributedJob(extension, multi_job_id) {
     try {
-        await extension.api.prepareJob(multi_job_id);
+        return await extension.api.prepareJob(multi_job_id);
     } catch (error) {
         extension.log("Error preparing job: " + error.message, "error");
         throw error;
@@ -458,14 +465,19 @@ async function dispatchToWorker(extension, worker, prompt, workflow, imageRefere
     extension.log('[Distributed] Prompt data: ' + JSON.stringify(promptToSend), "debug");
     
     try {
-        await fetch(`${workerUrl}/prompt`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
+        const response = await fetch(`${workerUrl}/prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             mode: 'cors',
-            body: JSON.stringify(promptToSend) 
+            body: JSON.stringify(promptToSend)
         });
+        if (!response.ok) {
+            const text = await response.text().catch(() => "");
+            throw new Error(`Worker returned HTTP ${response.status}${text ? `: ${text}` : ""}`);
+        }
     } catch (e) {
         extension.log(`Failed to connect to worker ${worker.name} at ${workerUrl}: ${e.message}`, "error");
+        throw e;
     }
 }
 

@@ -275,7 +275,7 @@ class DistributedExtension {
             }).length;
             const totalGPUs = activeWorkers + 1;
             if (this.isEnabled) {
-                summaryEl.textContent = `If Collector node is present, total generation = (${totalGPUs} GPUs × Batch Size)`;
+                summaryEl.textContent = `If Collector node is present, total generation = (${totalGPUs} GPUs x Batch Size)`;
             } else {
                 summaryEl.textContent = "Only the master GPU will be used.";
             }
@@ -1513,41 +1513,48 @@ class DistributedExtension {
             const response = await fetch('/deadline/status');
             const status = await response.json();
 
+            const appendStatusLine = (text, color = null, extraStyle = "") => {
+                const line = document.createElement('div');
+                line.textContent = text;
+                if (color) line.style.color = color;
+                if (extraStyle) line.style.cssText += extraStyle;
+                statusElement.appendChild(line);
+            };
+
+            statusElement.replaceChildren();
             if (status.available) {
                 const activeWorkersCount = status.active_workers ? status.active_workers.length : 0;
                 const activeJobsCount = status.active_jobs || 0;
-                
-                let statusHTML = `<div style="color: #4CAF50;">✅ Deadline available</div>`;
-                
+
+                appendStatusLine('Deadline available', '#4CAF50');
+
                 if (activeWorkersCount > 0) {
-                    statusHTML += `<div>🎯 Active Workers: ${activeWorkersCount}</div>`;
+                    appendStatusLine(`Active Workers: ${activeWorkersCount}`);
                 }
-                
+
                 if (activeJobsCount > 0) {
-                    statusHTML += `<div>📋 Running Jobs: ${activeJobsCount}</div>`;
+                    appendStatusLine(`Running Jobs: ${activeJobsCount}`);
                 } else {
-                    statusHTML += `<div style="color: #888;">No workers claimed yet</div>`;
+                    appendStatusLine('No workers claimed yet', '#888');
                 }
-                
-                statusElement.innerHTML = statusHTML;
+
                 statusElement.style.color = "#4CAF50";
-                
-                // Update active workers list if available
-                if (status.active_workers && status.active_workers.length > 0) {
-                    this.updateActiveWorkersList(status.active_workers);
-                }
+                this.updateActiveWorkersList(status.active_workers || []);
             } else {
-                statusElement.innerHTML = `
-                    <div style="color: #ff6b6b;">❌ Deadline not available</div>
-                    <div style="font-size: 10px; margin-top: 4px;">${status.error || 'Unknown error'}</div>
-                `;
+                appendStatusLine('Deadline not available', '#ff6b6b');
+                appendStatusLine(status.error || 'Unknown error', null, 'font-size: 10px; margin-top: 4px;');
                 statusElement.style.color = "#ff6b6b";
             }
         } catch (error) {
-            statusElement.innerHTML = `
-                <div style="color: #ff6b6b;">❌ Connection error</div>
-                <div style="font-size: 10px; margin-top: 4px;">${error.message}</div>
-            `;
+            statusElement.replaceChildren();
+            const title = document.createElement('div');
+            title.textContent = 'Connection error';
+            title.style.color = '#ff6b6b';
+            const detail = document.createElement('div');
+            detail.textContent = error.message;
+            detail.style.cssText = 'font-size: 10px; margin-top: 4px;';
+            statusElement.appendChild(title);
+            statusElement.appendChild(detail);
             statusElement.style.color = "#ff6b6b";
         }
     }
@@ -1560,7 +1567,7 @@ class DistributedExtension {
             const masterPort = this.config?.master?.port || '8188';
             const masterWS = `${recommendedIP}:${masterPort}`;
             
-            this.log(`🎯 Claiming ${count} workers with master at ${masterWS}`, 'info');
+            this.log(`Claiming ${count} workers with master at ${masterWS}`, 'info');
             
             // Get deadline settings from config
             const deadlineSettings = this.config?.deadline || {};
@@ -1568,7 +1575,7 @@ class DistributedExtension {
             const pool = deadlineSettings.pool || "none";
             const group = deadlineSettings.group || "none";
             
-            this.log(`📋 Using deadline settings: Priority=${priority}, Pool=${pool}, Group=${group}`, 'info');
+            this.log(`Using deadline settings: Priority=${priority}, Pool=${pool}, Group=${group}`, 'info');
             
             const response = await fetch('/deadline/claim_workers', {
                 method: 'POST',
@@ -1585,14 +1592,14 @@ class DistributedExtension {
             const result = await response.json();
 
             if (result.success) {
-                this.log(`✅ ${result.message}`, 'info');
+                this.log(`${result.message}`, 'info');
                 // Update status after claiming
                 setTimeout(() => this.updateDeadlineStatus(), 1000);
             } else {
-                this.log(`❌ Failed to claim workers: ${result.error}`, 'error');
+                this.log(`Failed to claim workers: ${result.error}`, 'error');
             }
         } catch (error) {
-            this.log(`❌ Error claiming workers: ${error.message}`, 'error');
+            this.log(`Error claiming workers: ${error.message}`, 'error');
         }
     }
 
@@ -1607,20 +1614,20 @@ class DistributedExtension {
             const result = await response.json();
 
             if (result.success) {
-                this.log(`✅ ${result.message}`, 'info');
+                this.log(`${result.message}`, 'info');
                 // Update status after releasing
                 setTimeout(() => this.updateDeadlineStatus(), 1000);
             } else {
-                this.log(`❌ Failed to release workers: ${result.error}`, 'error');
+                this.log(`Failed to release workers: ${result.error}`, 'error');
             }
         } catch (error) {
-            this.log(`❌ Error releasing workers: ${error.message}`, 'error');
+            this.log(`Error releasing workers: ${error.message}`, 'error');
         }
     }
 
     async removeAllRemoteWorkers() {
         try {
-            this.log(`🔄 Removing all remote workers...`, 'info');
+            this.log(`Removing all remote workers...`, 'info');
             
             const response = await fetch('/deadline/remove_all_remote_workers', {
                 method: 'POST',
@@ -1631,7 +1638,7 @@ class DistributedExtension {
             const result = await response.json();
 
             if (result.success) {
-                this.log(`✅ ${result.message}`, 'info');
+                this.log(`${result.message}`, 'info');
                 // Refresh the UI to show updated worker list
                 if (this.panelElement) {
                     const { renderSidebarContent } = await import('./sidebarRenderer.js');
@@ -1640,18 +1647,16 @@ class DistributedExtension {
                 // Also update deadline status
                 setTimeout(() => this.updateDeadlineStatus(), 500);
             } else {
-                this.log(`❌ Failed to remove remote workers: ${result.error}`, 'error');
+                this.log(`Failed to remove remote workers: ${result.error}`, 'error');
             }
         } catch (error) {
-            this.log(`❌ Error removing remote workers: ${error.message}`, 'error');
+            this.log(`Error removing remote workers: ${error.message}`, 'error');
         }
     }
 
     updateActiveWorkersList(workers) {
-        // Find or create workers list container in the deadline section
         let workersList = document.getElementById('deadline-workers-list');
         if (!workersList) {
-            // Create workers list container
             const deadlineSection = document.querySelector('#deadline-status').parentElement;
             workersList = document.createElement('div');
             workersList.id = 'deadline-workers-list';
@@ -1659,25 +1664,45 @@ class DistributedExtension {
             deadlineSection.appendChild(workersList);
         }
 
+        workersList.replaceChildren();
         if (workers.length === 0) {
-            workersList.innerHTML = '<div style="color: #888; font-style: italic;">No active workers</div>';
+            const empty = document.createElement('div');
+            empty.textContent = 'No active workers';
+            empty.style.cssText = 'color: #888; font-style: italic;';
+            workersList.appendChild(empty);
             return;
         }
 
-        // Create workers list
-        const workersHTML = workers.map(worker => `
-            <div style="padding: 4px; margin: 2px 0; background: #333; border-radius: 3px; border-left: 3px solid #ff6b35;">
-                <div style="font-weight: bold; color: #ff6b35;">🖥️ ${worker.id}</div>
-                <div style="color: #aaa;">📍 ${worker.ip}:${worker.port}</div>
-                ${worker.job_id ? `<div style="color: #888; font-size: 10px;">Job: ${worker.job_id}</div>` : ''}
-            </div>
-        `).join('');
+        const header = document.createElement('div');
+        header.textContent = 'Active Deadline Workers:';
+        header.style.cssText = 'font-weight: bold; margin-bottom: 4px; color: #ff6b35;';
+        workersList.appendChild(header);
 
-        workersList.innerHTML = `
-            <div style="font-weight: bold; margin-bottom: 4px; color: #ff6b35;">Active Deadline Workers:</div>
-            ${workersHTML}
-        `;
+        for (const worker of workers) {
+            const item = document.createElement('div');
+            item.style.cssText = 'padding: 4px; margin: 2px 0; background: #333; border-radius: 3px; border-left: 3px solid #ff6b35;';
+
+            const id = document.createElement('div');
+            id.textContent = worker.id || 'unknown';
+            id.style.cssText = 'font-weight: bold; color: #ff6b35;';
+            item.appendChild(id);
+
+            const address = document.createElement('div');
+            address.textContent = `${worker.ip || 'unknown'}:${worker.port || ''}`;
+            address.style.color = '#aaa';
+            item.appendChild(address);
+
+            if (worker.job_id) {
+                const job = document.createElement('div');
+                job.textContent = `Job: ${worker.job_id}`;
+                job.style.cssText = 'color: #888; font-size: 10px;';
+                item.appendChild(job);
+            }
+
+            workersList.appendChild(item);
+        }
     }
+
 }
 
 app.registerExtension({

@@ -2,7 +2,7 @@
 Async helper utilities for ComfyUI-Distributed.
 """
 import asyncio
-import threading
+import concurrent.futures
 from typing import Optional, Any, Coroutine
 from .network import get_server_loop
 
@@ -24,27 +24,20 @@ def run_async_in_server_loop(coro: Coroutine, timeout: Optional[float] = None) -
         TimeoutError: If the operation times out
         Exception: Any exception raised by the coroutine
     """
-    event = threading.Event()
-    result = None
-    error = None
-    
-    async def wrapper():
-        nonlocal result, error
-        try:
-            result = await coro
-        except Exception as e:
-            error = e
-        finally:
-            event.set()
-    
-    # Schedule on server's event loop
     loop = get_server_loop()
-    asyncio.run_coroutine_threadsafe(wrapper(), loop)
-    
-    # Wait for completion
-    if not event.wait(timeout):
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop is loop:
+        coro.close()
+        raise RuntimeError("Cannot synchronously wait for the server event loop from the server event loop thread")
+
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
         raise TimeoutError(f"Async operation timed out after {timeout} seconds")
-    
-    if error:
-        raise error
-    return result

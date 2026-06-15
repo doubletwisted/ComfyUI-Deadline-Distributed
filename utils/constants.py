@@ -60,5 +60,17 @@ def reload_constants():
         # Keep existing values on error
         pass
 
+def get_worker_job_timeout():
+    reload_constants()
+    return WORKER_JOB_TIMEOUT
+
+def get_max_batch():
+    reload_constants()
+    return MAX_BATCH
+
+def get_heartbeat_timeout():
+    reload_constants()
+    return HEARTBEAT_TIMEOUT
+
 # Load settings on import
 reload_constants()

@@ -19,6 +19,36 @@ except ImportError:
     def debug_log(msg): print(f"[DEBUG] {msg}")
     def log(msg): print(f"[LOG] {msg}")
 
+try:
+    from utils.security import (
+        DEADLINE_TOKEN_FIELD,
+        generate_token,
+        reject_unsafe_request,
+        require_deadline_registration_token,
+    )
+except ImportError:
+    try:
+        from .utils.security import (
+            DEADLINE_TOKEN_FIELD,
+            generate_token,
+            reject_unsafe_request,
+            require_deadline_registration_token,
+        )
+    except ImportError:
+        DEADLINE_TOKEN_FIELD = "registration_token"
+
+        def generate_token():
+            import secrets
+            return secrets.token_urlsafe(32)
+
+        def reject_unsafe_request(request, action="request"):
+            from aiohttp import web
+            return web.json_response({"status": "error", "message": "Security helpers unavailable"}, status=500)
+
+        def require_deadline_registration_token(request, expected_token, data=None):
+            from aiohttp import web
+            return web.json_response({"success": False, "error": "Security helpers unavailable"}, status=500)
+
 class DeadlineIntegration:
     """Main class for Deadline render farm integration"""
     
@@ -37,7 +67,7 @@ class DeadlineIntegration:
         
         if deadline_bin and os.path.exists(os.path.join(deadline_bin, 'deadlinecommand.exe')):
             deadline_command = os.path.join(deadline_bin, 'deadlinecommand.exe')
-            debug_log(f"✅ Found working Deadline command via DEADLINE_PATH: {deadline_command}")
+            debug_log(f"Found working Deadline command via DEADLINE_PATH: {deadline_command}")
             return deadline_command
         
         # Try common locations
@@ -48,10 +78,10 @@ class DeadlineIntegration:
         
         for path in common_paths:
             if os.path.exists(path):
-                debug_log(f"✅ Found Deadline command at: {path}")
+                debug_log(f"Found Deadline command at: {path}")
                 return path
         
-        debug_log("❌ Deadline command not found")
+        debug_log("Deadline command not found")
         return None
 
     async def get_worker_status(self) -> Dict[str, Any]:
@@ -85,9 +115,18 @@ class DeadlineIntegration:
         try:
             # Submit a distributed worker job to Deadline using proper job structure
             job_name = f"[DIST] ComfyUI Workers x{count}"
+            registration_token = generate_token()
             
             # Create job submission files (like original DeadlineSubmit)
-            job_info_file, plugin_info_file, workflow_file = self._create_worker_job_files(job_name, count, master_ws, priority, pool, group)
+            job_info_file, plugin_info_file, workflow_file = self._create_worker_job_files(
+                job_name,
+                count,
+                master_ws,
+                priority,
+                pool,
+                group,
+                registration_token
+            )
             
             # Submit to Deadline using proper arguments (must include workflow file)
             command_args = [job_info_file, plugin_info_file, workflow_file]
@@ -108,6 +147,7 @@ class DeadlineIntegration:
                         "type": "distributed",
                         "count": count,
                         "master_ws": master_ws,
+                        "registration_token": registration_token,
                         "submitted_at": time.time()
                     }
                     
@@ -170,9 +210,25 @@ class DeadlineIntegration:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def register_worker(self, worker_id: str, worker_ip: str, worker_port: int, job_id: str = None, deadline_worker_name: str = None) -> Dict[str, Any]:
+    def get_registration_token_for_job(self, job_id: str = None) -> Optional[str]:
+        """Return the registration token for an active Deadline worker job."""
+        if not job_id:
+            return None
+        return self.active_jobs.get(job_id, {}).get("registration_token")
+
+    def get_registration_token_for_worker(self, worker_id: str = None) -> Optional[str]:
+        """Return the registration token associated with a registered worker."""
+        if not worker_id:
+            return None
+        return self.claimed_workers.get(worker_id, {}).get("registration_token")
+
+    def register_worker(self, worker_id: str, worker_ip: str, worker_port: int, job_id: str = None, deadline_worker_name: str = None, registration_token: str = None) -> Dict[str, Any]:
         """Register a Deadline worker and add to ComfyUI-Distributed config with duplicate prevention"""
         try:
+            expected_token = self.get_registration_token_for_job(job_id)
+            if expected_token and registration_token != expected_token:
+                return {"success": False, "error": "Invalid registration token"}
+
             # Check for existing registrations from the same host+port
             existing_duplicate = None
             for existing_id, worker_info in self.claimed_workers.items():
@@ -186,7 +242,7 @@ class DeadlineIntegration:
             # Remove duplicate if found
             if existing_duplicate:
                 del self.claimed_workers[existing_duplicate]
-                debug_log(f"🗑️ Removed duplicate worker registration: {existing_duplicate}")
+                debug_log(f"Removed duplicate worker registration: {existing_duplicate}")
             
             # Check if this exact worker is already registered
             if worker_id in self.claimed_workers:
@@ -195,9 +251,10 @@ class DeadlineIntegration:
                     "ip": worker_ip,
                     "port": worker_port,
                     "job_id": job_id,
+                    "registration_token": registration_token,
                     "last_seen": time.time()
                 })
-                debug_log(f"✅ Updated existing worker registration: {worker_id}")
+                debug_log(f"Updated existing worker registration: {worker_id}")
             else:
                 # New registration
                 self.claimed_workers[worker_id] = {
@@ -205,9 +262,10 @@ class DeadlineIntegration:
                     "ip": worker_ip,
                     "port": worker_port,
                     "job_id": job_id,
+                    "registration_token": registration_token,
                     "last_seen": time.time()
                 }
-                debug_log(f"✅ New worker registered: {worker_id} at {worker_ip}:{worker_port}")
+                debug_log(f"New worker registered: {worker_id} at {worker_ip}:{worker_port}")
             
             # CRITICAL: Also add worker to ComfyUI-Distributed configuration
             self._add_worker_to_distributed_config(worker_id, worker_ip, worker_port, deadline_worker_name)
@@ -217,10 +275,13 @@ class DeadlineIntegration:
             debug_log(f"Error registering worker: {e}")
             return {"success": False, "error": str(e)}
 
-    def worker_heartbeat(self, worker_id: str) -> Dict[str, Any]:
+    def worker_heartbeat(self, worker_id: str, registration_token: str = None) -> Dict[str, Any]:
         """Update worker heartbeat"""
         try:
             if worker_id in self.claimed_workers:
+                expected_token = self.get_registration_token_for_worker(worker_id)
+                if expected_token and registration_token != expected_token:
+                    return {"success": False, "error": "Invalid registration token"}
                 self.claimed_workers[worker_id]["last_seen"] = time.time()
                 return {"success": True}
             else:
@@ -229,16 +290,19 @@ class DeadlineIntegration:
             debug_log(f"Error updating heartbeat: {e}")
             return {"success": False, "error": str(e)}
 
-    def unregister_worker(self, worker_id: str) -> Dict[str, Any]:
+    def unregister_worker(self, worker_id: str, registration_token: str = None) -> Dict[str, Any]:
         """Unregister a worker and remove from distributed config"""
         try:
             if worker_id in self.claimed_workers:
+                expected_token = self.get_registration_token_for_worker(worker_id)
+                if expected_token and registration_token != expected_token:
+                    return {"success": False, "error": "Invalid registration token"}
                 del self.claimed_workers[worker_id]
                 
                 # Also remove from distributed config
                 self._remove_worker_from_distributed_config(worker_id)
                 
-                debug_log(f"✅ Unregistered worker: {worker_id}")
+                debug_log(f"Unregistered worker: {worker_id}")
                 return {"success": True, "message": f"Worker {worker_id} unregistered"}
             else:
                 return {"success": False, "error": "Worker not found"}
@@ -290,7 +354,7 @@ class DeadlineIntegration:
                 # Remove workers that are deadline/remote sourced
                 if worker.get('source') == 'deadline' or worker.get('platform') == 'deadline':
                     removed_workers.append(worker.get('id', 'unknown'))
-                    debug_log(f"🗑️ Removing remote worker: {worker.get('id')} at {worker.get('host')}:{worker.get('port')}")
+                    debug_log(f"Removing remote worker: {worker.get('id')} at {worker.get('host')}:{worker.get('port')}")
                 else:
                     # Keep local workers
                     local_workers.append(worker)
@@ -344,13 +408,13 @@ class DeadlineIntegration:
                 
                 load_config = config_module.load_config
                 save_config = config_module.save_config
-                debug_log("✅ Successfully imported config module via importlib")
+                debug_log("Successfully imported config module via importlib")
                 
             except Exception as e1:
                 debug_log(f"Importlib method failed: {e1}, trying relative import...")
                 # Method 2: Try relative import with package context
                 from .utils.config import load_config, save_config
-                debug_log("✅ Successfully imported config module via relative import")
+                debug_log("Successfully imported config module via relative import")
             
             # Load current distributed config
             config = load_config()
@@ -392,7 +456,7 @@ class DeadlineIntegration:
             # Remove duplicates in reverse order to maintain indices
             for idx in sorted(duplicates_to_remove, reverse=True):
                 removed_worker = config['workers'].pop(idx)
-                debug_log(f"🗑️ Removed duplicate worker: {removed_worker.get('id')} at {removed_worker.get('host')}:{removed_worker.get('port')}")
+                debug_log(f"Removed duplicate worker: {removed_worker.get('id')} at {removed_worker.get('host')}:{removed_worker.get('port')}")
             
             # Create worker entry
             worker_config = {
@@ -411,11 +475,11 @@ class DeadlineIntegration:
             if existing_worker_idx is not None:
                 # Update existing worker
                 config['workers'][existing_worker_idx] = worker_config
-                debug_log(f"✅ Updated existing worker {worker_id} in distributed config")
+                debug_log(f"Updated existing worker {worker_id} in distributed config")
             else:
                 # Add new worker
                 config['workers'].append(worker_config)
-                debug_log(f"✅ Added new worker {worker_id} to distributed config")
+                debug_log(f"Added new worker {worker_id} to distributed config")
             
             # Do not automatically remove stale workers from persisted config
             
@@ -443,13 +507,13 @@ class DeadlineIntegration:
                 
                 load_config = config_module.load_config
                 save_config = config_module.save_config
-                debug_log("✅ Successfully imported config module via importlib (remove)")
+                debug_log("Successfully imported config module via importlib (remove)")
                 
             except Exception as e1:
                 debug_log(f"Importlib method failed: {e1}, trying relative import...")
                 # Method 2: Try relative import with package context
                 from .utils.config import load_config, save_config
-                debug_log("✅ Successfully imported config module via relative import (remove)")
+                debug_log("Successfully imported config module via relative import (remove)")
             
             # Load current distributed config
             config = load_config()
@@ -463,12 +527,12 @@ class DeadlineIntegration:
             
             if len(config['workers']) < original_count:
                 save_config(config)
-                debug_log(f"✅ Removed worker {worker_id} from distributed config")
+                debug_log(f"Removed worker {worker_id} from distributed config")
             
         except Exception as e:
             debug_log(f"Warning: Could not remove worker from distributed config: {e}")
 
-    def _create_worker_job_files(self, job_name: str, count: int, master_ws: str, priority: int = 50, pool: str = "none", group: str = "none") -> tuple:
+    def _create_worker_job_files(self, job_name: str, count: int, master_ws: str, priority: int = 50, pool: str = "none", group: str = "none", registration_token: str = "") -> tuple:
         """Create Deadline job info and plugin info files for worker submission"""
         # Create temporary directory for submission files
         temp_dir = tempfile.mkdtemp(prefix="comfy_deadline_workers_")
@@ -501,6 +565,7 @@ class DeadlineIntegration:
             f.write(f"EnvironmentKeyValue4=COMFY_FORCE_NEW_INSTANCE=1\n")
             f.write(f"EnvironmentKeyValue5=COMFY_WORKER_MODE=1\n")
             f.write(f"EnvironmentKeyValue6=GIT_PYTHON_REFRESH=quiet\n")
+            f.write(f"EnvironmentKeyValue7=COMFY_DISTRIBUTED_REGISTRATION_TOKEN={registration_token}\n")
         
         # Create a worker registration workflow
         dummy_workflow_file = os.path.join(temp_dir, "worker_registration.json")
@@ -527,6 +592,7 @@ class DeadlineIntegration:
             f.write("WorkerMode=True\n")  # Special flag for worker-only jobs
             f.write("ForceNewInstance=True\n")  # Force new ComfyUI instance
             f.write("UseExistingInstance=False\n")  # Don't reuse existing instance
+            f.write(f"RegistrationToken={registration_token}\n")
             # Note: WorkflowFile deliberately omitted - plugin will use GetDataFilename() for auxiliary file
             
         debug_log(f"Created worker job files: {job_info_file}, {plugin_info_file}, {dummy_workflow_file}")
@@ -562,15 +628,25 @@ def register_api_endpoints():
         
         # Check if server is ready
         if not hasattr(server, 'PromptServer') or not server.PromptServer.instance:
-            debug_log("❌ PromptServer not ready yet")
+            debug_log("PromptServer not ready yet")
             return False
         
+        prompt_server = server.PromptServer.instance
+        if getattr(prompt_server, "_deadline_distributed_routes_registered", False):
+            return True
+
         # Define endpoint functions
         async def deadline_status_endpoint(request):
+            blocked = reject_unsafe_request(request, "Deadline status")
+            if blocked:
+                return blocked
             status = await deadline_integration.get_worker_status()
             return web.json_response(status)
 
         async def deadline_claim_workers_endpoint(request):
+            blocked = reject_unsafe_request(request, "claim Deadline workers")
+            if blocked:
+                return blocked
             data = await request.json()
             count = data.get('count', 1)
             master_ws = data.get('master_ws', 'localhost:8188')
@@ -581,6 +657,9 @@ def register_api_endpoints():
             return web.json_response(result)
 
         async def deadline_release_workers_endpoint(request):
+            blocked = reject_unsafe_request(request, "release Deadline workers")
+            if blocked:
+                return blocked
             data = await request.json()
             job_ids = data.get('job_ids', [])
             result = await deadline_integration.release_workers(job_ids)
@@ -593,52 +672,90 @@ def register_api_endpoints():
             worker_port = data.get('worker_port')
             job_id = data.get('job_id')
             deadline_worker_name = data.get('deadline_worker_name')
-            result = deadline_integration.register_worker(worker_id, worker_ip, worker_port, job_id, deadline_worker_name)
+            registration_token = data.get(DEADLINE_TOKEN_FIELD)
+            blocked = require_deadline_registration_token(
+                request,
+                deadline_integration.get_registration_token_for_job(job_id),
+                data=data
+            )
+            if blocked:
+                return blocked
+            result = deadline_integration.register_worker(
+                worker_id,
+                worker_ip,
+                worker_port,
+                job_id,
+                deadline_worker_name,
+                registration_token
+            )
             return web.json_response(result)
 
         async def deadline_worker_heartbeat_endpoint(request):
             data = await request.json()
             worker_id = data.get('worker_id')
-            result = deadline_integration.worker_heartbeat(worker_id)
+            registration_token = data.get(DEADLINE_TOKEN_FIELD)
+            blocked = require_deadline_registration_token(
+                request,
+                deadline_integration.get_registration_token_for_worker(worker_id),
+                data=data
+            )
+            if blocked:
+                return blocked
+            result = deadline_integration.worker_heartbeat(worker_id, registration_token)
             return web.json_response(result)
 
         async def deadline_unregister_worker_endpoint(request):
             data = await request.json()
             worker_id = data.get('worker_id')
-            result = deadline_integration.unregister_worker(worker_id)
+            registration_token = data.get(DEADLINE_TOKEN_FIELD)
+            blocked = require_deadline_registration_token(
+                request,
+                deadline_integration.get_registration_token_for_worker(worker_id),
+                data=data
+            )
+            if blocked:
+                return blocked
+            result = deadline_integration.unregister_worker(worker_id, registration_token)
             return web.json_response(result)
 
         async def deadline_remove_remote_workers_endpoint(request):
             """HTTP endpoint for removing all remote workers"""
+            blocked = reject_unsafe_request(request, "remove remote Deadline workers")
+            if blocked:
+                return blocked
             result = deadline_integration.remove_all_remote_workers()
             return web.json_response(result)
 
         async def deadline_get_workers_endpoint(request):
             """HTTP endpoint for getting active workers"""
+            blocked = reject_unsafe_request(request, "get Deadline workers")
+            if blocked:
+                return blocked
             workers = deadline_integration.get_active_workers()
             return web.json_response({"success": True, "workers": workers})
 
         # Register endpoints
-        server.PromptServer.instance.routes.get("/deadline/status")(deadline_status_endpoint)
-        server.PromptServer.instance.routes.post("/deadline/claim_workers")(deadline_claim_workers_endpoint)
-        server.PromptServer.instance.routes.post("/deadline/release_workers")(deadline_release_workers_endpoint)
-        server.PromptServer.instance.routes.post("/deadline/register_worker")(deadline_register_worker_endpoint)
-        server.PromptServer.instance.routes.post("/deadline/worker_heartbeat")(deadline_worker_heartbeat_endpoint)
-        server.PromptServer.instance.routes.post("/deadline/unregister_worker")(deadline_unregister_worker_endpoint)
-        server.PromptServer.instance.routes.post("/deadline/remove_all_remote_workers")(deadline_remove_remote_workers_endpoint)
-        server.PromptServer.instance.routes.get("/deadline/workers")(deadline_get_workers_endpoint)
+        prompt_server.routes.get("/deadline/status")(deadline_status_endpoint)
+        prompt_server.routes.post("/deadline/claim_workers")(deadline_claim_workers_endpoint)
+        prompt_server.routes.post("/deadline/release_workers")(deadline_release_workers_endpoint)
+        prompt_server.routes.post("/deadline/register_worker")(deadline_register_worker_endpoint)
+        prompt_server.routes.post("/deadline/worker_heartbeat")(deadline_worker_heartbeat_endpoint)
+        prompt_server.routes.post("/deadline/unregister_worker")(deadline_unregister_worker_endpoint)
+        prompt_server.routes.post("/deadline/remove_all_remote_workers")(deadline_remove_remote_workers_endpoint)
+        prompt_server.routes.get("/deadline/workers")(deadline_get_workers_endpoint)
+        prompt_server._deadline_distributed_routes_registered = True
         
-        debug_log("✅ Deadline integration API endpoints registered")
+        debug_log("Deadline integration API endpoints registered")
         return True
         
     except ImportError:
-        debug_log("❌ Server modules not available - API endpoints not registered")
+        debug_log("Server modules not available - API endpoints not registered")
         return False
     except Exception as e:
-        debug_log(f"❌ Error registering API endpoints: {e}")
+        debug_log(f"Error registering API endpoints: {e}")
         return False
 
 # Try to register endpoints immediately
 register_api_endpoints()
 
-debug_log("✅ Deadline integration simple module loaded")
+debug_log("Deadline integration simple module loaded")

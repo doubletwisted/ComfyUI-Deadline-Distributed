@@ -10,14 +10,18 @@ try:
     from .distributed import ImageBatchDivider
     
     if hasattr(execution, 'validate_outputs'):
-        original_validate_outputs = execution.validate_outputs
-        
-        def patched_validate_outputs(executor, node_id, result, node_class):
-            if node_class == ImageBatchDivider:
-                return  # Skip validation for our dynamic output node
-            return original_validate_outputs(executor, node_id, result, node_class)
-        
-        execution.validate_outputs = patched_validate_outputs
+        current_validate_outputs = execution.validate_outputs
+        if not getattr(current_validate_outputs, "_deadline_distributed_patched", False):
+            original_validate_outputs = current_validate_outputs
+
+            def patched_validate_outputs(executor, node_id, result, node_class, *args, **kwargs):
+                if node_class == ImageBatchDivider:
+                    return  # Skip validation for our dynamic output node
+                return original_validate_outputs(executor, node_id, result, node_class, *args, **kwargs)
+
+            patched_validate_outputs._deadline_distributed_patched = True
+            patched_validate_outputs._deadline_distributed_original = original_validate_outputs
+            execution.validate_outputs = patched_validate_outputs
             
 except ImportError:
     pass  # ComfyUI execution module not available during import
