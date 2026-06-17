@@ -2,6 +2,20 @@ import { api } from "../../scripts/api.js";
 import { findNodesByClass, findImageReferences, hasUpstreamNode, pruneWorkflowForWorker, pruneMasterForCollectorOnly, getCachedWorkerSystemInfo } from './workerUtils.js';
 import { TIMEOUTS } from './constants.js';
 
+function findCollectorNodes(apiPrompt) {
+    return [
+        ...findNodesByClass(apiPrompt, "DistributedCollector"),
+        ...findNodesByClass(apiPrompt, "DeadlineDistributedCollector"),
+        ...findNodesByClass(apiPrompt, "DistributedVideoCollector"),
+        ...findNodesByClass(apiPrompt, "DeadlineDistributedVideoCollector")
+    ];
+}
+
+function isVideoCollector(collector) {
+    const classType = collector?.data?.class_type;
+    return classType === "DistributedVideoCollector" || classType === "DeadlineDistributedVideoCollector";
+}
+
 /**
  * Convert paths in the API prompt to match the target platform's separator
  * @param {Object} apiPrompt - The workflow API prompt
@@ -60,7 +74,9 @@ export function setupInterceptor(extension) {
         if (extension.isEnabled) {
             const hasCollector = (
                 findNodesByClass(prompt.output, "DistributedCollector").length > 0 ||
-                findNodesByClass(prompt.output, "DeadlineDistributedCollector").length > 0
+                findNodesByClass(prompt.output, "DeadlineDistributedCollector").length > 0 ||
+                findNodesByClass(prompt.output, "DistributedVideoCollector").length > 0 ||
+                findNodesByClass(prompt.output, "DeadlineDistributedVideoCollector").length > 0
             );
             const hasDistUpscale = (
                 findNodesByClass(prompt.output, "UltimateSDUpscaleDistributed").length > 0 ||
@@ -134,10 +150,7 @@ export async function executeParallelDistributed(extension, promptWrapper) {
         }
         
         // Find all distributed nodes in the workflow (both original and Deadline versions)
-        const collectorNodes = [
-            ...findNodesByClass(promptWrapper.output, "DistributedCollector"),
-            ...findNodesByClass(promptWrapper.output, "DeadlineDistributedCollector")
-        ];
+        const collectorNodes = findCollectorNodes(promptWrapper.output);
         const upscaleNodes = [
             ...findNodesByClass(promptWrapper.output, "UltimateSDUpscaleDistributed"),
             ...findNodesByClass(promptWrapper.output, "DeadlineUltimateSDUpscaleDistributed")
@@ -206,10 +219,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
     const isMaster = participantId === 'master';
     
     // Find all distributed nodes once (before pruning) - both original and Deadline versions
-    let collectorNodes = [
-        ...findNodesByClass(jobApiPrompt, "DistributedCollector"),
-        ...findNodesByClass(jobApiPrompt, "DeadlineDistributedCollector")
-    ];
+    let collectorNodes = findCollectorNodes(jobApiPrompt);
     const upscaleNodes = [
         ...findNodesByClass(jobApiPrompt, "UltimateSDUpscaleDistributed"),
         ...findNodesByClass(jobApiPrompt, "DeadlineUltimateSDUpscaleDistributed")
@@ -305,7 +315,9 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             // Re-find collector nodes after pruning (they should still exist)
             collectorNodes = [
                 ...findNodesByClass(jobApiPrompt, "DistributedCollector"),
-                ...findNodesByClass(jobApiPrompt, "DeadlineDistributedCollector")
+                ...findNodesByClass(jobApiPrompt, "DeadlineDistributedCollector"),
+                ...findNodesByClass(jobApiPrompt, "DistributedVideoCollector"),
+                ...findNodesByClass(jobApiPrompt, "DeadlineDistributedVideoCollector")
             ];
         }
     }
@@ -313,9 +325,10 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
     // Handle Distributed collector nodes (already found above)
     for (const collector of collectorNodes) {
         const { inputs } = jobApiPrompt[collector.id];
+        const collectorIsVideo = isVideoCollector(collector);
         
         // Check if this collector is downstream from a distributed upscaler
-        const hasUpstreamDistributedUpscaler = hasUpstreamNode(
+        const hasUpstreamDistributedUpscaler = !collectorIsVideo && (hasUpstreamNode(
             jobApiPrompt, 
             collector.id, 
             'UltimateSDUpscaleDistributed'
@@ -323,7 +336,7 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
             jobApiPrompt, 
             collector.id, 
             'DeadlineUltimateSDUpscaleDistributed'
-        );
+        ));
         
         if (hasUpstreamDistributedUpscaler) {
             // Set pass_through mode for this collector

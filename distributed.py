@@ -17,6 +17,10 @@ import signal
 import sys
 import shlex
 import uuid
+import shutil
+import tempfile
+import re
+from fractions import Fraction
 from multiprocessing import Queue
 from comfy.utils import ProgressBar
 
@@ -1732,6 +1736,114 @@ if not hasattr(prompt_server, 'distributed_pending_jobs'):
     prompt_server.distributed_pending_jobs = {}
     prompt_server.distributed_jobs_lock = asyncio.Lock()
 
+def _get_video_api():
+    from comfy_api.latest import InputImpl, Types
+    return InputImpl, Types
+
+def _video_container_options():
+    try:
+        _, Types = _get_video_api()
+        return Types.VideoContainer.as_input()
+    except Exception:
+        return ["auto", "mp4"]
+
+def _video_codec_options():
+    try:
+        _, Types = _get_video_api()
+        return Types.VideoCodec.as_input()
+    except Exception:
+        return ["auto", "h264"]
+
+def _participant_label(participant):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(participant)).strip("_") or "unknown"
+
+def _read_form_text(field, default=""):
+    if field is None:
+        return default
+    if hasattr(field, "file"):
+        raw = field.file.read()
+        return raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    if isinstance(field, (bytes, bytearray)):
+        return field.decode("utf-8")
+    return str(field)
+
+def _video_result(filename, subfolder, folder_type="output"):
+    return {
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": folder_type
+    }
+
+def _video_preview_ui(results, manifest):
+    return {
+        "images": results,
+        "animated": (True,),
+        "distributed_video_manifest": [manifest]
+    }
+
+def _save_video_to_output(video, participant, filename_prefix, format="auto", codec="auto", prompt=None, extra_pnginfo=None):
+    _, Types = _get_video_api()
+    width, height = video.get_dimensions()
+    participant_prefix = f"{filename_prefix}_{_participant_label(participant)}"
+    full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
+        participant_prefix,
+        folder_paths.get_output_directory(),
+        width,
+        height
+    )
+
+    extension = Types.VideoContainer.get_extension(format)
+    file = f"{filename}_{counter:05}.{extension}"
+    output_path = os.path.join(full_output_folder, file)
+
+    saved_metadata = None
+    try:
+        from comfy.cli_args import args
+        if not getattr(args, "disable_metadata", False):
+            metadata = {}
+            if extra_pnginfo is not None:
+                metadata.update(extra_pnginfo)
+            if prompt is not None:
+                metadata["prompt"] = prompt
+            if metadata:
+                saved_metadata = metadata
+    except Exception:
+        saved_metadata = None
+
+    video.save_to(
+        output_path,
+        format=Types.VideoContainer(format),
+        codec=Types.VideoCodec(codec),
+        metadata=saved_metadata
+    )
+    return {
+        "participant": str(participant),
+        "filename": file,
+        "subfolder": subfolder,
+        "type": "output",
+        "path": output_path
+    }
+
+def _move_uploaded_video_to_output(temp_path, participant, filename_prefix, format="mp4"):
+    extension = "mp4" if format in ("auto", None, "") else str(format).lstrip(".")
+    participant_prefix = f"{filename_prefix}_{_participant_label(participant)}"
+    full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
+        participant_prefix,
+        folder_paths.get_output_directory(),
+        1,
+        1
+    )
+    file = f"{filename}_{counter:05}.{extension}"
+    output_path = os.path.join(full_output_folder, file)
+    shutil.move(temp_path, output_path)
+    return {
+        "participant": str(participant),
+        "filename": file,
+        "subfolder": subfolder,
+        "type": "output",
+        "path": output_path
+    }
+
 @server.PromptServer.instance.routes.post("/distributed/load_image")
 async def load_image_endpoint(request):
     """Load an image or video file and return it as base64 data with hash."""
@@ -2006,6 +2118,100 @@ async def job_complete_endpoint(request):
                 return web.json_response({"status": "success"})
             else:
                 log(f"ERROR: Job {multi_job_id} not found in distributed_pending_jobs")
+                return await handle_api_error(request, "Job not found or already complete", 404)
+    except Exception as e:
+        return await handle_api_error(request, e)
+
+
+@server.PromptServer.instance.routes.post("/distributed/video_complete")
+async def video_complete_endpoint(request):
+    try:
+        data = await request.post()
+        multi_job_id = data.get('multi_job_id')
+        worker_id = data.get('worker_id')
+        is_last = data.get('is_last', 'True').lower() == 'true'
+
+        if multi_job_id is None or worker_id is None:
+            return await handle_api_error(request, "Missing multi_job_id or worker_id", 400)
+        blocked = require_job_token(request, get_distributed_job_token(multi_job_id), data=data)
+        if blocked:
+            return blocked
+
+        video_count = int(data.get('video_count', 1))
+        metadata = []
+        metadata_field = data.get('videos_metadata')
+        if metadata_field:
+            try:
+                metadata = json.loads(_read_form_text(metadata_field, "[]"))
+            except Exception as e:
+                return await handle_api_error(request, f"Video metadata parsing error: {e}", 400)
+
+        videos = []
+        for i in range(video_count):
+            video_field = data.get(f'video_{i}') or data.get('video')
+            if video_field is None or not hasattr(video_field, "file"):
+                log(f"Missing video_{i} from worker {worker_id}, skipping")
+                continue
+
+            fd, temp_path = tempfile.mkstemp(prefix=f"deadline_dist_video_{multi_job_id}_{worker_id}_", suffix=".mp4")
+            try:
+                with os.fdopen(fd, "wb") as temp_file:
+                    shutil.copyfileobj(video_field.file, temp_file)
+
+                # Validate through ComfyUI's VideoInput path without materializing frames.
+                InputImpl, _ = _get_video_api()
+                video_probe = InputImpl.VideoFromFile(temp_path)
+                width, height = video_probe.get_dimensions()
+                try:
+                    frame_count = video_probe.get_frame_count()
+                except Exception:
+                    frame_count = None
+
+                item_metadata = metadata[i] if i < len(metadata) and isinstance(metadata[i], dict) else {}
+                videos.append({
+                    "index": item_metadata.get("index", i),
+                    "temp_path": temp_path,
+                    "width": width,
+                    "height": height,
+                    "frame_count": frame_count,
+                    "filename": getattr(video_field, "filename", f"video_{i}.mp4")
+                })
+            except Exception as e:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+                log(f"Error processing video {i} from worker {worker_id}: {e}")
+                continue
+
+        if not videos:
+            return await handle_api_error(request, "No valid videos in upload", 400)
+
+        videos.sort(key=lambda item: item.get("index", 0))
+
+        async with prompt_server.distributed_jobs_lock:
+            if multi_job_id in prompt_server.distributed_pending_jobs:
+                await prompt_server.distributed_pending_jobs[multi_job_id].put({
+                    'worker_id': worker_id,
+                    'videos': videos,
+                    'is_last': is_last
+                })
+                debug_log(f"Received video result for job {multi_job_id} from worker {worker_id}, count={len(videos)}")
+                return web.json_response({"status": "success"})
+            else:
+                for video_data in videos:
+                    temp_path = video_data.get("temp_path")
+                    if temp_path and os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except Exception:
+                            pass
+                log(f"ERROR: Video job {multi_job_id} not found in distributed_pending_jobs")
                 return await handle_api_error(request, "Job not found or already complete", 404)
     except Exception as e:
         return await handle_api_error(request, e)
@@ -2313,6 +2519,244 @@ class DistributedCollectorNode:
                 # Return just the master images as fallback
                 return (images,)
 
+
+# --- Video Collector Node ---
+class DistributedVideoCollectorNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "video": ("VIDEO",),
+                "filename_prefix": ("STRING", {"default": "video/DeadlineDistributed"}),
+                "format": (_video_container_options(), {"default": "auto"}),
+                "codec": (_video_codec_options(), {"default": "auto"}),
+            },
+            "hidden": {
+                "multi_job_id": ("STRING", {"default": ""}),
+                "is_worker": ("BOOLEAN", {"default": False}),
+                "master_url": ("STRING", {"default": ""}),
+                "enabled_worker_ids": ("STRING", {"default": "[]"}),
+                "worker_id": ("STRING", {"default": ""}),
+                "master_rendering_enabled": ("BOOLEAN", {"default": True}),
+                "job_token": ("STRING", {"default": ""}),
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("manifest",)
+    FUNCTION = "run"
+    OUTPUT_NODE = True
+    CATEGORY = "video"
+
+    def run(self, video, filename_prefix="video/DeadlineDistributed", format="auto", codec="auto",
+            multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]",
+            worker_id="", master_rendering_enabled=True, job_token="", prompt=None, extra_pnginfo=None):
+        if not multi_job_id:
+            saved = _save_video_to_output(video, "local", filename_prefix, format, codec, prompt, extra_pnginfo)
+            manifest = {
+                "status": "saved",
+                "master_rendering_enabled": True,
+                "saved": [saved],
+                "missing_workers": [],
+                "errors": []
+            }
+            ui_results = [_video_result(saved["filename"], saved["subfolder"], saved["type"])]
+            return {"ui": _video_preview_ui(ui_results, manifest), "result": (json.dumps(manifest),)}
+
+        result = run_async_in_server_loop(
+            self.execute(video, filename_prefix, format, codec, multi_job_id, is_worker,
+                         master_url, enabled_worker_ids, worker_id, master_rendering_enabled,
+                         job_token, prompt, extra_pnginfo)
+        )
+        return result
+
+    async def send_video_to_master(self, video, multi_job_id, master_url, worker_id, format="auto", codec="auto", job_token="", prompt=None, extra_pnginfo=None):
+        _, Types = _get_video_api()
+        fd, temp_path = tempfile.mkstemp(prefix=f"deadline_dist_worker_video_{multi_job_id}_{worker_id}_", suffix=".mp4")
+        os.close(fd)
+        try:
+            metadata = None
+            if prompt is not None or extra_pnginfo is not None:
+                metadata = {}
+                if extra_pnginfo is not None:
+                    metadata.update(extra_pnginfo)
+                if prompt is not None:
+                    metadata["prompt"] = prompt
+
+            video.save_to(
+                temp_path,
+                format=Types.VideoContainer(format),
+                codec=Types.VideoCodec(codec),
+                metadata=metadata
+            )
+
+            try:
+                width, height = video.get_dimensions()
+            except Exception:
+                width, height = None, None
+            try:
+                frame_count = video.get_frame_count()
+            except Exception:
+                frame_count = None
+
+            data = aiohttp.FormData()
+            data.add_field('multi_job_id', multi_job_id)
+            data.add_field('worker_id', str(worker_id))
+            data.add_field('is_last', 'True')
+            data.add_field('video_count', '1')
+            data.add_field('videos_metadata', json.dumps([{
+                "index": 0,
+                "width": width,
+                "height": height,
+                "frame_count": frame_count
+            }]), content_type='application/json')
+
+            with open(temp_path, "rb") as video_file:
+                data.add_field('video_0', video_file, filename='video_0.mp4', content_type='video/mp4')
+                session = await get_client_session()
+                url = f"{master_url}/distributed/video_complete"
+                async with session.post(url, data=data, headers=make_job_headers(job_token)) as response:
+                    response.raise_for_status()
+        except Exception as e:
+            log(f"Worker - Failed to send video to master: {e}")
+            raise
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+    async def execute(self, video, filename_prefix="video/DeadlineDistributed", format="auto", codec="auto",
+                      multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]",
+                      worker_id="", master_rendering_enabled=True, job_token="", prompt=None, extra_pnginfo=None):
+        if is_worker:
+            debug_log(f"Worker - Video job {multi_job_id} complete. Sending video to master")
+            await self.send_video_to_master(video, multi_job_id, master_url, worker_id, format, codec, job_token, prompt, extra_pnginfo)
+            manifest = {"status": "sent", "worker_id": str(worker_id), "saved": [], "missing_workers": [], "errors": []}
+            return {"result": (json.dumps(manifest),)}
+
+        enabled_workers = json.loads(enabled_worker_ids)
+        workers_done = set()
+        worker_videos = {}
+        saved = []
+        errors = []
+
+        if master_rendering_enabled:
+            try:
+                saved.append(_save_video_to_output(video, "master", filename_prefix, format, codec, prompt, extra_pnginfo))
+            except Exception as e:
+                errors.append({"participant": "master", "error": str(e)})
+                log(f"Master - Failed to save master video for job {multi_job_id}: {e}")
+
+        num_workers = len(enabled_workers)
+        if num_workers == 0:
+            manifest = {
+                "status": "complete",
+                "master_rendering_enabled": bool(master_rendering_enabled),
+                "saved": saved,
+                "missing_workers": [],
+                "errors": errors
+            }
+            ui_results = [_video_result(item["filename"], item["subfolder"], item["type"]) for item in saved]
+            return {"ui": _video_preview_ui(ui_results, manifest), "result": (json.dumps(manifest),)}
+
+        async with prompt_server.distributed_jobs_lock:
+            if multi_job_id not in prompt_server.distributed_pending_jobs:
+                log(f"Master - WARNING: Video queue doesn't exist for job {multi_job_id}, creating one")
+                prompt_server.distributed_pending_jobs[multi_job_id] = asyncio.Queue()
+
+        timeout = get_worker_job_timeout() * 10 if not master_rendering_enabled else get_worker_job_timeout()
+        first_video_received = False
+        p = ProgressBar(num_workers)
+
+        while len(workers_done) < num_workers:
+            try:
+                async with prompt_server.distributed_jobs_lock:
+                    q = prompt_server.distributed_pending_jobs[multi_job_id]
+
+                result = await asyncio.wait_for(q.get(), timeout=timeout)
+                result_worker_id = str(result['worker_id'])
+                videos = result.get('videos', [])
+                worker_videos.setdefault(result_worker_id, []).extend(videos)
+
+                if not first_video_received:
+                    first_video_received = True
+                    timeout = get_worker_job_timeout()
+
+                if result.get('is_last', False):
+                    workers_done.add(result_worker_id)
+                    p.update(1)
+            except asyncio.TimeoutError:
+                missing_workers = set(str(w) for w in enabled_workers) - workers_done
+                log(f"Master - Video timeout. Still waiting for workers: {list(missing_workers)}")
+                async with prompt_server.distributed_jobs_lock:
+                    if multi_job_id in prompt_server.distributed_pending_jobs:
+                        final_q = prompt_server.distributed_pending_jobs[multi_job_id]
+                        while not final_q.empty():
+                            try:
+                                item = final_q.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                            result_worker_id = str(item['worker_id'])
+                            worker_videos.setdefault(result_worker_id, []).extend(item.get('videos', []))
+                            if item.get('is_last', False):
+                                workers_done.add(result_worker_id)
+                                p.update(1)
+                break
+
+        async with prompt_server.distributed_jobs_lock:
+            if multi_job_id in prompt_server.distributed_pending_jobs:
+                del prompt_server.distributed_pending_jobs[multi_job_id]
+        clear_distributed_job_token(multi_job_id)
+
+        for configured_worker in enabled_workers:
+            configured_worker = str(configured_worker)
+            for video_data in sorted(worker_videos.get(configured_worker, []), key=lambda item: item.get("index", 0)):
+                temp_path = video_data.get("temp_path")
+                if not temp_path:
+                    continue
+                try:
+                    saved.append(_move_uploaded_video_to_output(temp_path, f"worker_{configured_worker}", filename_prefix, "mp4"))
+                except Exception as e:
+                    errors.append({"participant": configured_worker, "error": str(e)})
+                    log(f"Master - Failed to save worker video for job {multi_job_id}, worker {configured_worker}: {e}")
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except Exception:
+                            pass
+
+        missing_workers = [str(w) for w in enabled_workers if str(w) not in workers_done]
+        manifest = {
+            "status": "complete" if not missing_workers else "partial",
+            "master_rendering_enabled": bool(master_rendering_enabled),
+            "saved": saved,
+            "missing_workers": missing_workers,
+            "errors": errors
+        }
+        ui_results = [_video_result(item["filename"], item["subfolder"], item["type"]) for item in saved]
+        return {"ui": _video_preview_ui(ui_results, manifest), "result": (json.dumps(manifest),)}
+
+
+class DistributedVideoPlaceholder:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}}
+
+    RETURN_TYPES = ("VIDEO",)
+    RETURN_NAMES = ("video",)
+    FUNCTION = "generate"
+    CATEGORY = "Distributed"
+
+    def generate(self):
+        InputImpl, Types = _get_video_api()
+        frame = torch.zeros(1, 1, 1, 3, dtype=torch.float32)
+        components = Types.VideoComponents(images=frame, audio=None, frame_rate=Fraction(1, 1))
+        return (InputImpl.VideoFromComponents(components),)
+
 # --- Distributor Node ---
 class DistributedSeed:
     """
@@ -2500,27 +2944,35 @@ class ImageBatchDivider:
 
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
+    "DistributedVideoCollector": DistributedVideoCollectorNode,
     "DistributedSeed": DistributedSeed,
     "DistributedBatch": DistributedBatch,
     "DistributedPlaceholder": DistributedPlaceholder,
+    "DistributedVideoPlaceholder": DistributedVideoPlaceholder,
     "ImageBatchDivider": ImageBatchDivider,
     # Deadline-named versions for consistency
     "DeadlineDistributedCollector": DistributedCollectorNode,
+    "DeadlineDistributedVideoCollector": DistributedVideoCollectorNode,
     "DeadlineDistributedSeed": DistributedSeed,
     "DeadlineDistributedBatch": DistributedBatch,
     "DeadlineDistributedPlaceholder": DistributedPlaceholder,
+    "DeadlineDistributedVideoPlaceholder": DistributedVideoPlaceholder,
     "DeadlineImageBatchDivider": ImageBatchDivider
 }
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
+    "DistributedVideoCollector": "Distributed Video Collector",
     "DistributedSeed": "Distributed Seed", 
     "DistributedBatch": "Distributed Batch",
     "DistributedPlaceholder": "Distributed Placeholder",
+    "DistributedVideoPlaceholder": "Distributed Video Placeholder",
     "ImageBatchDivider": "Image Batch Divider",
     # Deadline-named versions for consistency
     "DeadlineDistributedCollector": "Deadline Distributed Collector",
+    "DeadlineDistributedVideoCollector": "Deadline Distributed Video Collector",
     "DeadlineDistributedSeed": "Deadline Distributed Seed",
     "DeadlineDistributedBatch": "Deadline Distributed Batch",
     "DeadlineDistributedPlaceholder": "Deadline Distributed Placeholder",
+    "DeadlineDistributedVideoPlaceholder": "Deadline Distributed Video Placeholder",
     "DeadlineImageBatchDivider": "Deadline Image Batch Divider"
 }

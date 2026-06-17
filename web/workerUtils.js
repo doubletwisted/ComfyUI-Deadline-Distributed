@@ -78,6 +78,16 @@ export function findNodesByClass(apiPrompt, className) {
         .map(([nodeId, nodeData]) => ({ id: nodeId, data: nodeData }));
 }
 
+function isVideoCollectorNode(node) {
+    const classType = node?.data?.class_type;
+    return classType === "DistributedVideoCollector" || classType === "DeadlineDistributedVideoCollector";
+}
+
+function isImageCollectorNode(node) {
+    const classType = node?.data?.class_type;
+    return classType === "DistributedCollector" || classType === "DeadlineDistributedCollector";
+}
+
 /**
  * Find all image references in the workflow
  * Looks for inputs named "image" that contain filename strings
@@ -164,8 +174,16 @@ export function findCollectorUpstreamNodes(apiPrompt, collectorIds) {
 export function pruneWorkflowForWorker(extension, apiPrompt, distributedNodes = null) {
     // Find all distributed nodes if not provided
     if (!distributedNodes) {
-            const collectorNodes = findNodesByClass(apiPrompt, "DeadlineDistributedCollector");
-    const upscaleNodes = findNodesByClass(apiPrompt, "DeadlineUltimateSDUpscaleDistributed");
+        const collectorNodes = [
+            ...findNodesByClass(apiPrompt, "DistributedCollector"),
+            ...findNodesByClass(apiPrompt, "DeadlineDistributedCollector"),
+            ...findNodesByClass(apiPrompt, "DistributedVideoCollector"),
+            ...findNodesByClass(apiPrompt, "DeadlineDistributedVideoCollector")
+        ];
+        const upscaleNodes = [
+            ...findNodesByClass(apiPrompt, "UltimateSDUpscaleDistributed"),
+            ...findNodesByClass(apiPrompt, "DeadlineUltimateSDUpscaleDistributed")
+        ];
         distributedNodes = [...collectorNodes, ...upscaleNodes];
     }
     
@@ -191,6 +209,10 @@ export function pruneWorkflowForWorker(extension, apiPrompt, distributedNodes = 
     // Check if any distributed node has downstream SaveImage nodes that were removed
     // If so, add a PreviewImage node after the collector
     for (const distNode of distributedNodes) {
+        if (isVideoCollectorNode(distNode)) {
+            continue;
+        }
+
         const distNodeId = distNode.id;
         
         // Check if this distributed node had any downstream nodes in the original workflow
@@ -252,30 +274,64 @@ export function pruneMasterForCollectorOnly(extension, apiPrompt, collectorNodes
     // Deep clone the prompt to avoid mutating the original
     const prunedPrompt = JSON.parse(JSON.stringify(apiPrompt));
     
-    // Generate unique ID for placeholder node (max existing numeric key + 1)
+    // Generate placeholder node IDs after the current max numeric key.
     const existingIds = Object.keys(prunedPrompt)
         .filter(k => !isNaN(parseInt(k)))
         .map(k => parseInt(k));
     const maxId = existingIds.length > 0 ? Math.max(...existingIds) : 0;
-    const placeholderId = String(maxId + 1);
-    
-    // Inject DistributedPlaceholder node
-    prunedPrompt[placeholderId] = {
-        class_type: "DistributedPlaceholder",
-        inputs: {},
-        _meta: {
-            title: "Placeholder (master rendering disabled)"
+    let nextId = maxId + 1;
+    const placeholderIds = [];
+    let imagePlaceholderId = null;
+    let videoPlaceholderId = null;
+
+    const imageCollectors = collectorNodes.filter(isImageCollectorNode);
+    const videoCollectors = collectorNodes.filter(isVideoCollectorNode);
+
+    if (imageCollectors.length > 0) {
+        imagePlaceholderId = String(nextId++);
+        placeholderIds.push(imagePlaceholderId);
+        prunedPrompt[imagePlaceholderId] = {
+            class_type: "DistributedPlaceholder",
+            inputs: {},
+            _meta: {
+                title: "Image Placeholder (master rendering disabled)"
+            }
+        };
+        extension.log(`Injected DistributedPlaceholder node ${imagePlaceholderId}`, "debug");
+    }
+
+    if (videoCollectors.length > 0) {
+        videoPlaceholderId = String(nextId++);
+        placeholderIds.push(videoPlaceholderId);
+        prunedPrompt[videoPlaceholderId] = {
+            class_type: "DistributedVideoPlaceholder",
+            inputs: {},
+            _meta: {
+                title: "Video Placeholder (master rendering disabled)"
+            }
+        };
+        extension.log(`Injected DistributedVideoPlaceholder node ${videoPlaceholderId}`, "debug");
+    }
+
+    for (const collector of imageCollectors) {
+        if (prunedPrompt[collector.id] && prunedPrompt[collector.id].inputs && imagePlaceholderId) {
+            prunedPrompt[collector.id].inputs.images = [imagePlaceholderId, 0];
+            extension.log(`Rewired image collector ${collector.id} to use placeholder ${imagePlaceholderId}`, "debug");
         }
-    };
-    
-    extension.log(`Injected DistributedPlaceholder node ${placeholderId}`, "debug");
-    
-    // Rewire each collector's images input to the placeholder
+    }
+
+    for (const collector of videoCollectors) {
+        if (prunedPrompt[collector.id] && prunedPrompt[collector.id].inputs && videoPlaceholderId) {
+            prunedPrompt[collector.id].inputs.video = [videoPlaceholderId, 0];
+            extension.log(`Rewired video collector ${collector.id} to use placeholder ${videoPlaceholderId}`, "debug");
+        }
+    }
+
     const collectorIds = collectorNodes.map(n => n.id);
-    for (const collectorId of collectorIds) {
-        if (prunedPrompt[collectorId] && prunedPrompt[collectorId].inputs) {
-            prunedPrompt[collectorId].inputs.images = [placeholderId, 0];
-            extension.log(`Rewired collector ${collectorId} to use placeholder ${placeholderId}`, "debug");
+    const oldCollectorUpstream = findCollectorUpstreamNodes(apiPrompt, collectorIds);
+    for (const upstreamNodeId of oldCollectorUpstream) {
+        if (!collectorIds.includes(upstreamNodeId) && prunedPrompt[upstreamNodeId]) {
+            delete prunedPrompt[upstreamNodeId];
         }
     }
     
@@ -315,7 +371,7 @@ export function pruneMasterForCollectorOnly(extension, apiPrompt, collectorNodes
     }
     
     // BFS backwards from terminal nodes to find all reachable nodes
-    const reachable = new Set([placeholderId]); // Always include placeholder
+    const reachable = new Set(placeholderIds); // Always include placeholders
     const toProcess = [...terminalNodes];
     
     while (toProcess.length > 0) {
