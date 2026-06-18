@@ -23,9 +23,9 @@ def get_default_config():
             "debug": False,
             "auto_launch_workers": False,
             "stop_workers_on_master_exit": True,
-            "worker_job_timeout": 60.0,
+            "worker_result_wait_timeout": 60.0,
             "max_batch": 20,
-            "heartbeat_timeout": 60
+            "worker_heartbeat_grace_timeout": 60
         },
         "deadline": {
             "priority": 50,

@@ -39,7 +39,8 @@ from .utils.constants import (
     PROCESS_TERMINATION_TIMEOUT, WORKER_CHECK_INTERVAL,
     STATUS_CHECK_INTERVAL, CHUNK_SIZE, LOG_TAIL_BYTES, WORKER_LOG_PATTERN,
     WORKER_STARTUP_DELAY, PROCESS_WAIT_TIMEOUT, MEMORY_CLEAR_DELAY,
-    get_max_batch, get_worker_job_timeout, reload_constants
+    FIRST_RESULT_TIMEOUT_MULTIPLIER, get_max_batch,
+    get_worker_result_wait_timeout, reload_constants
 )
 
 # Try to import psutil for better process management
@@ -475,6 +476,12 @@ async def update_setting_endpoint(request):
 
         if not key or value is None:
             return await handle_api_error(request, "Missing 'key' or 'value' in request", 400)
+
+        setting_aliases = {
+            "worker_job_timeout": "worker_result_wait_timeout",
+            "heartbeat_timeout": "worker_heartbeat_grace_timeout",
+        }
+        key = setting_aliases.get(key, key)
 
         config = load_config()
         if 'settings' not in config:
@@ -2337,11 +2344,11 @@ class DistributedCollectorNode:
             # and workers may take much longer to start. After first image arrives, use normal timeout.
             if not master_rendering_enabled:
                 # Master finished instantly, workers need more time for first image - use extended timeout
-                timeout = get_worker_job_timeout() * 10
+                timeout = get_worker_result_wait_timeout() * FIRST_RESULT_TIMEOUT_MULTIPLIER
                 debug_log(f"Master rendering disabled - using extended timeout: {timeout}s for first wait")
             else:
                 # Normal case: master also processes, so timeout is reasonable
-                timeout = get_worker_job_timeout()
+                timeout = get_worker_result_wait_timeout()
             
             # Track if we've received first image (to reduce timeout after first image when master rendering disabled)
             first_image_received = False
@@ -2408,11 +2415,11 @@ class DistributedCollectorNode:
                         first_image_received = True
                         if not master_rendering_enabled:
                             # Master rendering disabled: reduce from extended to normal timeout after first image
-                            timeout = get_worker_job_timeout()
+                            timeout = get_worker_result_wait_timeout()
                             debug_log(f"First image received - reducing timeout to normal: {timeout}s")
                         else:
                             # Normal case: timeout already normal, keep it
-                            timeout = get_worker_job_timeout()
+                            timeout = get_worker_result_wait_timeout()
                     
                     if is_last:
                         workers_done.add(worker_id)
@@ -2668,7 +2675,11 @@ class DistributedVideoCollectorNode:
                 log(f"Master - WARNING: Video queue doesn't exist for job {multi_job_id}, creating one")
                 prompt_server.distributed_pending_jobs[multi_job_id] = asyncio.Queue()
 
-        timeout = get_worker_job_timeout() * 10 if not master_rendering_enabled else get_worker_job_timeout()
+        timeout = (
+            get_worker_result_wait_timeout() * FIRST_RESULT_TIMEOUT_MULTIPLIER
+            if not master_rendering_enabled
+            else get_worker_result_wait_timeout()
+        )
         first_video_received = False
         p = ProgressBar(num_workers)
 
@@ -2684,7 +2695,7 @@ class DistributedVideoCollectorNode:
 
                 if not first_video_received:
                     first_video_received = True
-                    timeout = get_worker_job_timeout()
+                    timeout = get_worker_result_wait_timeout()
 
                 if result.get('is_last', False):
                     workers_done.add(result_worker_id)

@@ -87,11 +87,13 @@ The plugin stores settings in `gpu_config.json`.
 
 Relevant settings include:
 
-- `settings.worker_job_timeout`: collector wait timeout for worker results
+- `settings.worker_result_wait_timeout`: how long the master waits without receiving a worker result
 - `settings.max_batch`: maximum result batch size sent back to the master
-- `settings.heartbeat_timeout`: worker heartbeat timeout before requeue/fallback handling
+- `settings.worker_heartbeat_grace_timeout`: how long a worker can miss heartbeats before requeue/fallback handling
 - `security.require_private_network`: reject no-origin admin requests from non-private clients
 - `security.allow_missing_origin_from_private_network`: allow tools or same-LAN clients that omit browser origin headers
+
+Legacy `settings.worker_job_timeout` and `settings.heartbeat_timeout` keys are still accepted for existing configs.
 
 Most users should leave the security settings at their defaults.
 

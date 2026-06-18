@@ -27,7 +27,8 @@ from .utils.async_helpers import run_async_in_server_loop
 from .utils.security import JOB_TOKEN_FIELD, make_job_headers
 from .utils.constants import (
     TILE_COLLECTION_TIMEOUT, TILE_WAIT_TIMEOUT, TILE_TRANSFER_TIMEOUT,
-    QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT, get_max_batch, get_heartbeat_timeout
+    QUEUE_INIT_TIMEOUT, TILE_SEND_TIMEOUT, get_max_batch,
+    get_worker_heartbeat_grace_timeout
 )
 
 # Import for controller support
@@ -43,10 +44,10 @@ from .utils.usdu_managment import (
 )
 
 
-# Note: MAX_BATCH and HEARTBEAT_TIMEOUT are imported from utils.constants
+# Note: MAX_BATCH and worker heartbeat grace are imported from utils.constants
 # They can be overridden via environment variables:
 # - COMFYUI_MAX_BATCH (default: 20)
-# - COMFYUI_HEARTBEAT_TIMEOUT (default: 120)
+# - COMFYUI_HEARTBEAT_TIMEOUT (default: 60)
 
 # Sync wrapper decorator for async methods
 def sync_wrapper(async_func):
@@ -829,7 +830,7 @@ class UltimateSDUpscaleDistributed:
         # Check for requeued tiles from failed workers
         debug_log(f"Worker {worker_id} checking for requeued tiles...")
         idle_start = time.time()
-        max_idle_wait = get_heartbeat_timeout() + 15
+        max_idle_wait = get_worker_heartbeat_grace_timeout() + 15
         idle_poll_interval = 2.0
         while True:
             # Request next task from the master's pending queue.
@@ -961,7 +962,7 @@ class UltimateSDUpscaleDistributed:
             # Check for requeued tiles from failed workers
             debug_log(f"Worker {worker_id} checking for requeued tiles...")
             idle_start = time.time()
-            max_idle_wait = get_heartbeat_timeout() + 15
+            max_idle_wait = get_worker_heartbeat_grace_timeout() + 15
             idle_poll_interval = 2.0
             while True:
                 # Request next task from the master's pending queue.
@@ -1057,7 +1058,7 @@ class UltimateSDUpscaleDistributed:
             
             # Main processing loop - pull tiles from queue
             idle_start = time.time()
-            max_idle_wait = get_heartbeat_timeout() + 15
+            max_idle_wait = get_worker_heartbeat_grace_timeout() + 15
             idle_poll_interval = 2.0
             while True:
                 # Request a tile to process

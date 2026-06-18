@@ -78,12 +78,53 @@ from .deadline_worker_registration import (
 from .utils.config import ensure_config_exists, CONFIG_FILE
 from .utils.logging import debug_log
 
+def _install_windows_asyncio_connection_reset_filter():
+    """Suppress noisy Windows Proactor cleanup logs for closed worker connections."""
+    if os.name != "nt":
+        return
+
+    try:
+        import server
+
+        loop = getattr(server.PromptServer.instance, "loop", None)
+        if loop is None or getattr(loop, "_deadline_distributed_connection_reset_filter", False):
+            return
+
+        previous_handler = loop.get_exception_handler()
+
+        def connection_reset_filter(event_loop, context):
+            exception = context.get("exception")
+            message = context.get("message", "")
+            handle = repr(context.get("handle", ""))
+            is_proactor_pipe_cleanup = (
+                "_ProactorBasePipeTransport._call_connection_lost" in message
+                or "_ProactorBasePipeTransport._call_connection_lost" in handle
+            )
+            is_connection_reset = isinstance(exception, ConnectionResetError)
+            error_code = getattr(exception, "winerror", None) or getattr(exception, "errno", None)
+            is_windows_remote_close = error_code == 10054
+
+            if is_proactor_pipe_cleanup and is_connection_reset and is_windows_remote_close:
+                debug_log("Suppressed Windows connection reset during worker pipe cleanup")
+                return
+
+            if previous_handler:
+                previous_handler(event_loop, context)
+            else:
+                event_loop.default_exception_handler(context)
+
+        loop.set_exception_handler(connection_reset_filter)
+        loop._deadline_distributed_connection_reset_filter = True
+    except Exception as e:
+        debug_log(f"Could not install Windows asyncio connection reset filter: {e}")
+
 # Initialize Deadline integration API endpoints
 from . import deadline_integration_simple as deadline_integration
 
 WEB_DIRECTORY = "./web"
 
 ensure_config_exists()
+_install_windows_asyncio_connection_reset_filter()
 
 # Merge node mappings
 NODE_CLASS_MAPPINGS = {

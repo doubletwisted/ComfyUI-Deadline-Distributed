@@ -170,11 +170,13 @@ class DistributedExtension {
         
         try {
             await this.api.updateSetting(key, value);
+
+            const valueText = typeof value === "boolean" ? (value ? "enabled" : "disabled") : `set to ${value}`;
             
             app.extensionManager.toast.add({
                 severity: "success",
                 summary: "Setting Updated",
-                detail: `${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} ${value ? 'enabled' : 'disabled'}`,
+                detail: `${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} ${valueText}`,
                 life: 2000
             });
         } catch (error) {

@@ -259,13 +259,19 @@ export async function renderSidebarContent(extension, el) {
         settingsDiv.appendChild(autoLaunchGroup);
         settingsDiv.appendChild(stopOnExitGroup);
 
-        const addNumberSetting = (key, labelText, value, min = 1, step = 1) => {
+        const settings = extension.config?.settings || {};
+        const getSettingValue = (key, legacyKey, fallback) => (
+            settings[key] ?? settings[legacyKey] ?? fallback
+        );
+
+        const addNumberSetting = (key, labelText, value, min = 1, step = 1, tooltip = "") => {
             const group = document.createElement("div");
             group.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
 
             const label = document.createElement("label");
             label.textContent = labelText;
             label.style.cssText = "font-size: 12px; color: #ccc;";
+            if (tooltip) label.title = tooltip;
 
             const input = document.createElement("input");
             input.type = "number";
@@ -273,6 +279,7 @@ export async function renderSidebarContent(extension, el) {
             input.step = String(step);
             input.value = value;
             input.style.cssText = "padding: 4px 8px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 12px;";
+            if (tooltip) input.title = tooltip;
             input.onchange = (e) => {
                 const parsed = Number(e.target.value);
                 if (!Number.isNaN(parsed)) {
@@ -286,25 +293,27 @@ export async function renderSidebarContent(extension, el) {
         };
 
         addNumberSetting(
-            'worker_job_timeout',
-            'Worker Job Timeout (s)',
-            extension.config?.settings?.worker_job_timeout ?? 60,
+            'worker_result_wait_timeout',
+            'Worker Result Wait Timeout (s)',
+            getSettingValue('worker_result_wait_timeout', 'worker_job_timeout', 60),
             1,
-            1
+            1,
+            'How long the master waits without a worker result before continuing with partial or local results.'
         );
         addNumberSetting(
             'max_batch',
             'Max Batch Size',
-            extension.config?.settings?.max_batch ?? 20,
+            getSettingValue('max_batch', 'max_batch', 20),
             1,
             1
         );
         addNumberSetting(
-            'heartbeat_timeout',
-            'Heartbeat Timeout (s)',
-            extension.config?.settings?.heartbeat_timeout ?? 60,
+            'worker_heartbeat_grace_timeout',
+            'Worker Heartbeat Grace Timeout (s)',
+            getSettingValue('worker_heartbeat_grace_timeout', 'heartbeat_timeout', 60),
             1,
-            1
+            1,
+            'How long a worker can miss heartbeats before its assigned upscale work is requeued.'
         );
         settingsContent.appendChild(settingsDiv);
         updateSettingsHeight();

@@ -20,7 +20,7 @@ from .security import JOB_TOKEN_FIELD, require_job_token, make_job_headers
 MAX_PAYLOAD_SIZE = int(os.environ.get('COMFYUI_MAX_PAYLOAD_SIZE', str(50 * 1024 * 1024)))
 
 # Import runtime settings from constants
-from .constants import get_heartbeat_timeout
+from .constants import get_worker_heartbeat_grace_timeout
 
 
 # Unified Job Data Structure Keys
@@ -183,7 +183,7 @@ async def _check_and_requeue_timed_out_workers(multi_job_id, total_tasks):
         completed_tasks = job_data.get(JOB_COMPLETED_TASKS, {})
 
         for worker, last_heartbeat in list(job_data.get(JOB_WORKER_STATUS, {}).items()):
-            if current_time - last_heartbeat > get_heartbeat_timeout():
+            if current_time - last_heartbeat > get_worker_heartbeat_grace_timeout():
                 log(f"Worker {worker} timed out")
                 for task_id in job_data.get(JOB_ASSIGNED_TO_WORKERS, {}).get(worker, []):
                     if task_id not in completed_tasks:

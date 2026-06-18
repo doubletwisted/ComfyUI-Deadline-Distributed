@@ -20,6 +20,15 @@ except ImportError:
     def log(msg): print(f"[LOG] {msg}")
 
 try:
+    from utils.constants import get_worker_heartbeat_grace_timeout
+except ImportError:
+    try:
+        from .utils.constants import get_worker_heartbeat_grace_timeout
+    except ImportError:
+        def get_worker_heartbeat_grace_timeout():
+            return 60
+
+try:
     from utils.security import (
         DEADLINE_TOKEN_FIELD,
         generate_token,
@@ -56,7 +65,6 @@ class DeadlineIntegration:
         self.deadline_command = self._find_deadline_command()
         self.claimed_workers = {}
         self.active_jobs = {}
-        self.worker_heartbeat_timeout = 60  # seconds
         debug_log("DeadlineIntegration initialized")
 
     def _find_deadline_command(self) -> Optional[str]:
@@ -313,10 +321,11 @@ class DeadlineIntegration:
     def get_active_workers(self) -> List[Dict[str, Any]]:
         """Get list of active workers. Does not mutate persisted config or runtime registry."""
         current_time = time.time()
+        heartbeat_grace_timeout = get_worker_heartbeat_grace_timeout()
         active_workers = []
         
         for worker_id, worker_info in list(self.claimed_workers.items()):
-            if current_time - worker_info["last_seen"] < self.worker_heartbeat_timeout:
+            if current_time - worker_info["last_seen"] < heartbeat_grace_timeout:
                 active_workers.append(worker_info)
         
         return active_workers
