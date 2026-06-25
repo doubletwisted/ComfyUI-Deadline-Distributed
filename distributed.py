@@ -87,6 +87,11 @@ def get_distributed_job_token(multi_job_id):
 def clear_distributed_job_token(multi_job_id):
     ensure_distributed_job_tokens().pop(multi_job_id, None)
 
+def _coerce_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
 # --- API Endpoints ---
 @server.PromptServer.instance.routes.get("/distributed/config")
 async def get_config_endpoint(request):
@@ -2771,9 +2776,8 @@ class DistributedVideoPlaceholder:
 # --- Distributor Node ---
 class DistributedSeed:
     """
-    Distributes seed values across multiple GPUs.
-    On master: passes through the original seed.
-    On workers: adds offset based on worker ID.
+    Deadline-compatible seed node.
+    Batch mode varies by Deadline task ID; distributed mode varies by worker ID.
     """
     
     @classmethod
@@ -2790,6 +2794,8 @@ class DistributedSeed:
             "hidden": {
                 "is_worker": ("BOOLEAN", {"default": False}),
                 "worker_id": ("STRING", {"default": ""}),
+                "task_id": ("INT", {"default": 0}),
+                "batch_mode": ("BOOLEAN", {"default": False}),
             },
         }
     
@@ -2798,30 +2804,39 @@ class DistributedSeed:
     FUNCTION = "distribute"
     CATEGORY = "utils"
     
-    def distribute(self, seed, is_worker=False, worker_id=""):
-        if not is_worker:
-            # Master node: pass through original values
-            debug_log(f"Distributor - Master: seed={seed}")
-            return (seed,)
-        else:
-            # Worker node: apply offset based on worker index
-            # Find worker index from enabled_worker_ids
+    def distribute(self, seed, is_worker=False, worker_id="", task_id=0, batch_mode=False):
+        seed = int(seed)
+
+        if _coerce_bool(batch_mode):
             try:
-                # Worker IDs are passed as "worker_0", "worker_1", etc.
-                if worker_id.startswith("worker_"):
-                    worker_index = int(worker_id.split("_")[1])
-                else:
-                    # Fallback: try to parse as direct index
-                    worker_index = int(worker_id)
-                
-                offset = worker_index + 1
-                new_seed = seed + offset
-                debug_log(f"Distributor - Worker {worker_index}: seed={seed} -> {new_seed}")
-                return (new_seed,)
-            except (ValueError, IndexError) as e:
-                debug_log(f"Distributor - Error parsing worker_id '{worker_id}': {e}")
-                # Fallback: return original seed
-                return (seed,)
+                task_index = int(task_id)
+            except (TypeError, ValueError):
+                task_index = 0
+
+            new_seed = seed + task_index
+            debug_log(f"Deadline Seed - Batch task {task_index}: seed={seed} -> {new_seed}")
+            return (new_seed,)
+
+        if not _coerce_bool(is_worker):
+            debug_log(f"Deadline Seed - Master: seed={seed}")
+            return (seed,)
+
+        try:
+            worker_id = str(worker_id)
+            if worker_id.startswith("worker_"):
+                worker_index = int(worker_id.split("_")[1])
+            else:
+                worker_index = int(worker_id)
+
+            new_seed = seed + worker_index + 1
+            debug_log(f"Deadline Seed - Worker {worker_index}: seed={seed} -> {new_seed}")
+            return (new_seed,)
+        except (ValueError, IndexError, TypeError) as e:
+            debug_log(f"Deadline Seed - Error parsing worker_id '{worker_id}': {e}")
+            return (seed,)
+
+class LegacyDistributedSeedAlias(DistributedSeed):
+    DEPRECATED = True
 
 # --- Distributed Placeholder Node ---
 class DistributedPlaceholder:
@@ -2956,7 +2971,7 @@ class ImageBatchDivider:
 NODE_CLASS_MAPPINGS = { 
     "DistributedCollector": DistributedCollectorNode,
     "DistributedVideoCollector": DistributedVideoCollectorNode,
-    "DistributedSeed": DistributedSeed,
+    "DistributedSeed": LegacyDistributedSeedAlias,
     "DistributedBatch": DistributedBatch,
     "DistributedPlaceholder": DistributedPlaceholder,
     "DistributedVideoPlaceholder": DistributedVideoPlaceholder,
@@ -2964,7 +2979,8 @@ NODE_CLASS_MAPPINGS = {
     # Deadline-named versions for consistency
     "DeadlineDistributedCollector": DistributedCollectorNode,
     "DeadlineDistributedVideoCollector": DistributedVideoCollectorNode,
-    "DeadlineDistributedSeed": DistributedSeed,
+    "DeadlineDistributedSeed": LegacyDistributedSeedAlias,
+    "DeadlineSeed": DistributedSeed,
     "DeadlineDistributedBatch": DistributedBatch,
     "DeadlineDistributedPlaceholder": DistributedPlaceholder,
     "DeadlineDistributedVideoPlaceholder": DistributedVideoPlaceholder,
@@ -2973,7 +2989,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = { 
     "DistributedCollector": "Distributed Collector",
     "DistributedVideoCollector": "Distributed Video Collector",
-    "DistributedSeed": "Distributed Seed", 
+    "DistributedSeed": "Deadline Seed", 
     "DistributedBatch": "Distributed Batch",
     "DistributedPlaceholder": "Distributed Placeholder",
     "DistributedVideoPlaceholder": "Distributed Video Placeholder",
@@ -2981,7 +2997,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     # Deadline-named versions for consistency
     "DeadlineDistributedCollector": "Deadline Distributed Collector",
     "DeadlineDistributedVideoCollector": "Deadline Distributed Video Collector",
-    "DeadlineDistributedSeed": "Deadline Distributed Seed",
+    "DeadlineDistributedSeed": "Deadline Seed",
+    "DeadlineSeed": "Deadline Seed",
     "DeadlineDistributedBatch": "Deadline Distributed Batch",
     "DeadlineDistributedPlaceholder": "Deadline Distributed Placeholder",
     "DeadlineDistributedVideoPlaceholder": "Deadline Distributed Video Placeholder",

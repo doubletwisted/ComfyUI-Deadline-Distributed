@@ -274,10 +274,11 @@ export async function prepareApiPromptForParticipant(extension, baseApiPrompt, p
         }
     }
     
-    // Handle Distributed seed nodes (both original and Deadline versions)
+    // Handle Deadline seed nodes, including compatibility aliases
     const distributorNodes = [
         ...findNodesByClass(jobApiPrompt, "DistributedSeed"),
-        ...findNodesByClass(jobApiPrompt, "DeadlineDistributedSeed")
+        ...findNodesByClass(jobApiPrompt, "DeadlineDistributedSeed"),
+        ...findNodesByClass(jobApiPrompt, "DeadlineSeed")
     ];
     if (distributorNodes.length > 0) {
         extension.log(`Found ${distributorNodes.length} seed node(s)`, "debug");
